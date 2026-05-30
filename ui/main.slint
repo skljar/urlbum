@@ -1,4 +1,4 @@
-import { Button, ListView, HorizontalBox, VerticalBox } from "std-widgets.slint";
+import { Button, ListView, HorizontalBox, VerticalBox, LineEdit } from "std-widgets.slint";
 
 struct FolderItem {
     id: int,
@@ -22,10 +22,21 @@ export component AppWindow inherits Window {
     in property <[BookmarkItem]> bookmark-model;
     in-out property <int>        selected-folder-id: -1;
 
+    // Properties dialog state
+    in-out property <int>    prop-id: -1;
+    in-out property <string> prop-title;
+    in-out property <string> prop-url;
+    in-out property <string> prop-note;
+    in-out property <bool>   prop-is-folder: false;
+    in-out property <bool>   prop-visible: false;
+
     callback new-folder();
     callback new-bookmark();
     callback delete-selected();
     callback folder-clicked(int);
+    callback open-properties(int);
+    callback save-properties();
+    callback cancel-properties();
 
     VerticalBox {
         // Toolbar
@@ -91,7 +102,68 @@ export component AppWindow inherits Window {
                                 vertical-alignment: center;
                             }
                         }
+
+                        TouchArea {
+                            double-clicked => { root.open-properties(bm.id); }
+                        }
                     }
+                }
+            }
+        }
+    }
+
+    // Properties dialog — modal overlay, drawn on top of main content
+    if root.prop-visible: Rectangle {
+        x: 0; y: 0;
+        width: root.width;
+        height: root.height;
+        background: #00000055;
+
+        TouchArea { /* absorb backdrop clicks so main UI is blocked */ }
+
+        Rectangle {
+            x: (root.width  - self.width)  / 2;
+            y: (root.height - self.height) / 2;
+            width: 420px;
+            height: root.prop-is-folder ? 195px : 230px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            border-color: #aaaaaa;
+            border-width: 1px;
+
+            VerticalBox {
+                padding: 20px;
+                spacing: 10px;
+
+                Text {
+                    text: root.prop-is-folder ? "Folder Properties" : "Bookmark Properties";
+                    font-size: 14px;
+                    font-weight: 700;
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Title:"; width: 50px; vertical-alignment: center; }
+                    LineEdit { horizontal-stretch: 1; text <=> root.prop-title; }
+                }
+
+                if !root.prop-is-folder: HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "URL:"; width: 50px; vertical-alignment: center; }
+                    LineEdit { horizontal-stretch: 1; text <=> root.prop-url; }
+                }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Note:"; width: 50px; vertical-alignment: center; }
+                    LineEdit { horizontal-stretch: 1; text <=> root.prop-note; }
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 8px;
+                    Button { text: "OK";     clicked => { root.save-properties();   } }
+                    Button { text: "Cancel"; clicked => { root.cancel-properties(); } }
                 }
             }
         }

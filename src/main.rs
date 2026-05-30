@@ -106,7 +106,7 @@ fn main() {
         let parent = s.selected_folder;
         if let Ok(new_id) = db::insert_node(&s.db, parent, "folder", "New Folder", None) {
             if let Some(p) = parent {
-                s.expanded.insert(p); // auto-expand parent so child is visible
+                s.expanded.insert(p);
             }
             s.selected_folder = Some(new_id);
         }
@@ -138,6 +138,48 @@ fn main() {
         w.set_selected_folder_id(-1);
         refresh_folders(&s, &w);
         refresh_bookmarks(&s, &w);
+    });
+
+    // Open properties dialog: load node from DB, fill fields, show dialog
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_open_properties(move |id| {
+        let id64 = id as i64;
+        let s = sc.borrow();
+        if let Ok(node) = db::get_node(&s.db, id64) {
+            let w = ww.upgrade().unwrap();
+            w.set_prop_id(id);
+            w.set_prop_title(node.title.into());
+            w.set_prop_url(node.url.unwrap_or_default().into());
+            w.set_prop_note(node.note.unwrap_or_default().into());
+            w.set_prop_is_folder(node.kind == "folder");
+            w.set_prop_visible(true);
+        }
+    });
+
+    // Save properties: read fields, update DB, close dialog, refresh
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_save_properties(move || {
+        let w = ww.upgrade().unwrap();
+        let id       = w.get_prop_id() as i64;
+        let title    = w.get_prop_title();
+        let url_str  = w.get_prop_url();
+        let note_str = w.get_prop_note();
+        let url  = if url_str.is_empty()  { None } else { Some(url_str.as_str())  };
+        let note = if note_str.is_empty() { None } else { Some(note_str.as_str()) };
+        {
+            let s = sc.borrow();
+            let _ = db::update_node(&s.db, id, title.as_str(), url, note);
+        }
+        w.set_prop_visible(false);
+        let s = sc.borrow();
+        refresh_folders(&s, &w);
+        refresh_bookmarks(&s, &w);
+    });
+
+    // Cancel: just close the dialog
+    let ww = window.as_weak();
+    window.on_cancel_properties(move || {
+        ww.upgrade().unwrap().set_prop_visible(false);
     });
 
     window.run().unwrap();
