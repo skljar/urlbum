@@ -1,0 +1,11 @@
+[package]
+name = "urlbum"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+slint = "1.7"
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+[build-dependencies]
+slint-build = "1.7"
