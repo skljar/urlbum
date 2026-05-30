@@ -1,7 +1,99 @@
-import { Button } from "std-widgets.slint";
+import { Button, ListView, HorizontalBox, VerticalBox } from "std-widgets.slint";
+
+struct FolderItem {
+    id: int,
+    title: string,
+    depth: int,
+    expanded: bool,
+}
+
+struct BookmarkItem {
+    id: int,
+    title: string,
+    url: string,
+}
 
 export component AppWindow inherits Window {
     title: "URLbum";
     min-width: 800px;
     min-height: 500px;
+
+    in property <[FolderItem]>   folder-model;
+    in property <[BookmarkItem]> bookmark-model;
+    in-out property <int>        selected-folder-id: -1;
+
+    callback new-folder();
+    callback new-bookmark();
+    callback delete-selected();
+    callback folder-clicked(int);
+
+    VerticalBox {
+        // Toolbar
+        HorizontalBox {
+            height: 40px;
+            Button { text: "New Folder";   clicked => { root.new-folder();      } }
+            Button { text: "New Bookmark"; clicked => { root.new-bookmark();    } }
+            Button { text: "Delete";       clicked => { root.delete-selected(); } }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        // Main area
+        HorizontalBox {
+            // Left panel — folder tree
+            Rectangle {
+                width: 250px;
+                border-color: #cccccc;
+                border-width: 1px;
+
+                ListView {
+                    for folder in root.folder-model: Rectangle {
+                        height: 28px;
+                        background: folder.id == root.selected-folder-id
+                            ? #d0e4ff : transparent;
+
+                        HorizontalLayout {
+                            padding-left: folder.depth * 16px;
+                            padding-top: 4px;
+                            Text {
+                                text: (folder.expanded ? "▼ " : "▶ ") + folder.title;
+                                vertical-alignment: center;
+                            }
+                        }
+
+                        TouchArea {
+                            clicked => { root.folder-clicked(folder.id); }
+                        }
+                    }
+                }
+            }
+
+            // Right panel — bookmark list
+            Rectangle {
+                border-color: #cccccc;
+                border-width: 1px;
+
+                ListView {
+                    for bm in root.bookmark-model: Rectangle {
+                        height: 28px;
+
+                        HorizontalLayout {
+                            padding-left: 8px;
+                            padding-top: 4px;
+                            spacing: 12px;
+                            Text {
+                                width: 200px;
+                                text: bm.title;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: bm.url;
+                                color: #666666;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
