@@ -124,6 +124,8 @@ struct State {
 - ✅ Неблокирующий импорт: фоновый поток (`std::thread`) + `invoke_from_event_loop`, прогресс в тулбаре ("Импортировано N..."), кнопка блокируется на время импорта, `busy_timeout=5000` на обоих соединениях
 - ✅ Автосброс статуса импорта через 5 сек (`Timer::single_shot` + `mem::forget` — живёт до срабатывания)
 - ✅ 12 тестов (`cargo test`): 8 DB + 4 import (decode, date, url, real file)
+- ✅ Иконки папок: PNG из url-album-2 (`assets/folder-closed.png`, `folder-open.png`), `image-rendering: pixelated`
+- ✅ Перетаскиваемый разделитель панелей (`tree-width` 120–600px, `mouse-cursor: col-resize`); панели без рамок
 
 ## Очередь фич (приоритет)
 

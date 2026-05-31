@@ -73,6 +73,9 @@ export component AppWindow inherits Window {
     in-out property <bool>   import-in-progress: false;
     in-out property <string> import-status: "";
 
+    // --- Ширина левой панели (splitter) ---
+    in-out property <length> tree-width: 250px;
+
     VerticalBox {
         // Тулбар
         HorizontalBox {
@@ -86,13 +89,11 @@ export component AppWindow inherits Window {
         }
 
         // Основная область
-        HorizontalBox {
+        HorizontalLayout {
 
             // ══ Левая панель — смешанное дерево ══
             Rectangle {
-                width: 250px;
-                border-color: #cccccc;
-                border-width: 1px;
+                width: root.tree-width;
 
                 ListView {
                     for item in root.tree-model: Rectangle {
@@ -102,9 +103,9 @@ export component AppWindow inherits Window {
                         HorizontalLayout {
                             padding-left: item.depth * 16px;
 
-                            // Зона значка ▶/▼ — только для папок, 20px
+                            // Зона иконки папки — только для папок, 22px
                             if item.is_folder: TouchArea {
-                                width: 20px;
+                                width: 22px;
                                 clicked => { root.tree-toggle-expand(item.id); }
                                 pointer-event(event) => {
                                     if event.button == PointerEventButton.right
@@ -116,9 +117,13 @@ export component AppWindow inherits Window {
                                 }
                                 VerticalLayout {
                                     alignment: center;
-                                    Text {
-                                        text: item.expanded ? "▼" : "▶";
-                                        horizontal-alignment: center;
+                                    Image {
+                                        source: item.expanded
+                                            ? @image-url("../assets/folder-open.png")
+                                            : @image-url("../assets/folder-closed.png");
+                                        image-rendering: pixelated;
+                                        width: 18px;
+                                        height: 16px;
                                     }
                                 }
                             }
@@ -151,10 +156,21 @@ export component AppWindow inherits Window {
                 }
             }
 
+            // ══ Разделитель (перетаскиваемый) ══
+            Rectangle {
+                width: 4px;
+                background: #e0e0e0;
+                TouchArea {
+                    mouse-cursor: col-resize;
+                    moved => {
+                        root.tree-width = max(120px, min(600px, root.tree-width + self.mouse-x));
+                    }
+                }
+            }
+
             // ══ Правая панель — список или карточка ══
             Rectangle {
-                border-color: #cccccc;
-                border-width: 1px;
+                horizontal-stretch: 1;
 
                 VerticalLayout {
 
