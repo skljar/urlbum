@@ -407,6 +407,13 @@ fn main() {
         let w = ww.upgrade().unwrap();
         refresh_tree(&s, &w);
         refresh_contents(&s, &w);
+        // Через 5 сек очистить статус; single_shot делает mem::forget — Timer живёт до срабатывания
+        let ww2 = ww.clone();
+        slint::Timer::single_shot(std::time::Duration::from_secs(5), move || {
+            if let Some(w) = ww2.upgrade() {
+                w.set_import_status("".into());
+            }
+        });
     });
 
     // ── Импорт ua.dat — фоновый поток ─────────────────────────────────────────
