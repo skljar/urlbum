@@ -1,6 +1,7 @@
 slint::include_modules!();
 
 mod db;
+mod import;
 
 extern crate webbrowser;
 
@@ -397,6 +398,22 @@ fn main() {
         w.set_selected_id(s.selected_id.unwrap_or(-1) as i32);
         refresh_tree(&s, &w);
         refresh_contents(&s, &w);
+    });
+
+    // ── Импорт ua.dat ─────────────────────────────────────────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_import_ua_dat(move || {
+        let path = r"C:\Projects\url-album-2\ua.dat";
+        let s = sc.borrow();
+        match import::import_ua_dat(&s.db, path) {
+            Ok(count) => {
+                eprintln!("Imported {count} records from ua.dat");
+                let w = ww.upgrade().unwrap();
+                refresh_tree(&s, &w);
+                refresh_contents(&s, &w);
+            }
+            Err(e) => eprintln!("Import error: {e}"),
+        }
     });
 
     // ── Отменить диалог ───────────────────────────────────────────────────────

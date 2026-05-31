@@ -66,6 +66,7 @@ export component AppWindow inherits Window {
     callback cancel-properties();
     callback ctx-request(int, bool);        // ПКМ: id, is_folder
     callback ctx-open-browser(int);         // открыть ссылку в браузере
+    callback import-ua-dat();               // импорт из ua.dat
 
     VerticalBox {
         // Тулбар
@@ -74,6 +75,7 @@ export component AppWindow inherits Window {
             Button { text: "New Folder";   clicked => { root.new-folder();      } }
             Button { text: "New Bookmark"; clicked => { root.new-bookmark();    } }
             Button { text: "Delete";       clicked => { root.delete-selected(); } }
+            Button { text: "Import ua.dat"; clicked => { root.import-ua-dat();  } }
             Rectangle { horizontal-stretch: 1; }
         }
 
