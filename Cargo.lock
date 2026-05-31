@@ -4928,6 +4928,7 @@ dependencies = [
  "rusqlite",
  "slint",
  "slint-build",
+ "webbrowser",
 ]
 
 [[package]]

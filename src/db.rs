@@ -9,6 +9,8 @@ pub struct Node {
     pub url: Option<String>,
     pub note: Option<String>,
     pub sort_idx: i64,
+    pub created: Option<String>,   // populated by get_node only
+    pub visited: Option<String>,   // populated by get_node only
 }
 
 pub fn open(path: &str) -> Result<Connection> {
@@ -48,6 +50,8 @@ pub fn get_children(conn: &Connection, parent: Option<i64>) -> Result<Vec<Node>>
                 url:      row.get(4)?,
                 note:     row.get(5)?,
                 sort_idx: row.get(6)?,
+                created:  None,  // not fetched here — use get_node when needed
+                visited:  None,
             })
         })?
         .collect::<Result<Vec<_>>>()?;
@@ -55,9 +59,9 @@ pub fn get_children(conn: &Connection, parent: Option<i64>) -> Result<Vec<Node>>
 }
 
 pub fn get_node(conn: &Connection, id: i64) -> Result<Node> {
-    // columns:  0    1       2     3       4    5     6
+    // columns:  0    1       2     3       4    5     6         7        8
     conn.query_row(
-        "SELECT id, parent, kind, title, url, note, sort_idx
+        "SELECT id, parent, kind, title, url, note, sort_idx, created, visited
          FROM nodes WHERE id = ?1",
         [id],
         |row| Ok(Node {
@@ -68,6 +72,8 @@ pub fn get_node(conn: &Connection, id: i64) -> Result<Node> {
             url:      row.get(4)?,
             note:     row.get(5)?,
             sort_idx: row.get(6)?,
+            created:  row.get(7)?,
+            visited:  row.get(8)?,
         }),
     )
 }
@@ -96,6 +102,14 @@ pub fn update_node(
     conn.execute(
         "UPDATE nodes SET title=?1, url=?2, note=?3 WHERE id=?4",
         params![title, url, note, id],
+    )?;
+    Ok(())
+}
+
+pub fn touch_visited(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE nodes SET visited = datetime('now') WHERE id = ?1",
+        [id],
     )?;
     Ok(())
 }
@@ -197,6 +211,18 @@ mod tests {
         assert_eq!(node.url.as_deref(), Some("https://test.com"));
         assert_eq!(node.kind, "bookmark");
         assert_eq!(node.note, None);
+        // created is populated from DB (datetime('now'))
+        assert!(node.created.is_some());
+        assert_eq!(node.visited, None);
+    }
+
+    #[test]
+    fn touch_visited_sets_visited_date() {
+        let conn = test_db();
+        let id = insert_node(&conn, None, "bookmark", "Test", Some("https://test.com")).unwrap();
+        assert_eq!(get_node(&conn, id).unwrap().visited, None, "visited должен быть NULL после вставки");
+        touch_visited(&conn, id).unwrap();
+        assert!(get_node(&conn, id).unwrap().visited.is_some(), "visited должен быть заполнен после touch_visited");
     }
 
     #[test]

@@ -1,15 +1,12 @@
 import { Button, ListView, HorizontalBox, VerticalBox, LineEdit } from "std-widgets.slint";
 
-struct FolderItem {
+// Универсальный узел: используется и в левом дереве, и в правом списке
+struct TreeItem {
     id: int,
     title: string,
     depth: int,
     expanded: bool,
-}
-
-struct BookmarkItem {
-    id: int,
-    title: string,
+    is_folder: bool,
     url: string,
 }
 
@@ -18,11 +15,28 @@ export component AppWindow inherits Window {
     min-width: 800px;
     min-height: 500px;
 
-    in property <[FolderItem]>   folder-model;
-    in property <[BookmarkItem]> bookmark-model;
-    in-out property <int>        selected-folder-id: -1;
+    // --- Модели ---
+    in property <[TreeItem]> tree-model;      // левое дерево
+    in property <[TreeItem]> contents-model;  // правая панель (список)
 
-    // Properties dialog state
+    // --- Выделение ---
+    in-out property <int>  selected-id: -1;   // подсвечен в дереве
+    in-out property <int>  status-id: -1;     // выделена строка в списке (одиночный клик)
+
+    // --- Режим правой панели ---
+    in-out property <bool>   show-card: false;
+    in-out property <int>    card-id: -1;
+    in-out property <string> card-title;
+    in-out property <string> card-url;
+
+    // --- Статусбар ---
+    in-out property <bool>   status-visible: false;
+    in-out property <string> status-url;
+    in-out property <string> status-note;
+    in-out property <string> status-created;
+    in-out property <string> status-visited;
+
+    // --- Диалог свойств ---
     in-out property <int>    prop-id: -1;
     in-out property <string> prop-title;
     in-out property <string> prop-url;
@@ -30,16 +44,21 @@ export component AppWindow inherits Window {
     in-out property <bool>   prop-is-folder: false;
     in-out property <bool>   prop-visible: false;
 
+    // --- Callbacks ---
     callback new-folder();
     callback new-bookmark();
     callback delete-selected();
-    callback folder-clicked(int);
+    callback tree-toggle-expand(int);            // клик по значку ▶/▼
+    callback tree-item-clicked(int, bool);      // одиночный клик по названию в дереве
+    callback tree-item-activated(int, bool);    // двойной клик по названию в дереве
+    callback list-item-clicked(int, bool);      // id, is_folder — правая панель, одиночный клик
+    callback list-item-activated(int, bool);    // id, is_folder — правая панель, двойной клик
     callback open-properties(int);
     callback save-properties();
     callback cancel-properties();
 
     VerticalBox {
-        // Toolbar
+        // Тулбар
         HorizontalBox {
             height: 40px;
             Button { text: "New Folder";   clicked => { root.new-folder();      } }
@@ -48,78 +67,176 @@ export component AppWindow inherits Window {
             Rectangle { horizontal-stretch: 1; }
         }
 
-        // Main area
+        // Основная область
         HorizontalBox {
-            // Left panel — folder tree
+
+            // ══ Левая панель — смешанное дерево ══
             Rectangle {
                 width: 250px;
                 border-color: #cccccc;
                 border-width: 1px;
 
                 ListView {
-                    for folder in root.folder-model: Rectangle {
+                    for item in root.tree-model: Rectangle {
                         height: 28px;
-                        background: folder.id == root.selected-folder-id
-                            ? #d0e4ff : transparent;
+                        background: item.id == root.selected-id ? #d0e4ff : transparent;
 
                         HorizontalLayout {
-                            padding-left: folder.depth * 16px;
-                            padding-top: 4px;
-                            Text {
-                                text: (folder.expanded ? "▼ " : "▶ ") + folder.title;
-                                vertical-alignment: center;
-                            }
-                        }
+                            padding-left: item.depth * 16px;
 
-                        TouchArea {
-                            clicked => { root.folder-clicked(folder.id); }
+                            // Зона значка ▶/▼ — только для папок, 20px
+                            if item.is_folder: TouchArea {
+                                width: 20px;
+                                clicked => { root.tree-toggle-expand(item.id); }
+                                VerticalLayout {
+                                    alignment: center;
+                                    Text {
+                                        text: item.expanded ? "▼" : "▶";
+                                        horizontal-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Зона названия — одиночный и двойной клик
+                            TouchArea {
+                                horizontal-stretch: 1;
+                                clicked        => { root.tree-item-clicked(item.id, item.is_folder);   }
+                                double-clicked => { root.tree-item-activated(item.id, item.is_folder); }
+                                HorizontalLayout {
+                                    padding-left: 4px;
+                                    padding-top: 4px;
+                                    Text {
+                                        text: item.is_folder ? item.title : "  • " + item.title;
+                                        vertical-alignment: center;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            // Right panel — bookmark list
+            // ══ Правая панель — список или карточка ══
             Rectangle {
                 border-color: #cccccc;
                 border-width: 1px;
 
-                ListView {
-                    for bm in root.bookmark-model: Rectangle {
-                        height: 28px;
+                VerticalLayout {
 
-                        HorizontalLayout {
-                            padding-left: 8px;
-                            padding-top: 4px;
-                            spacing: 12px;
-                            Text {
-                                width: 200px;
-                                text: bm.title;
-                                vertical-alignment: center;
-                            }
-                            Text {
-                                text: bm.url;
-                                color: #666666;
-                                vertical-alignment: center;
-                            }
-                        }
+                    // СПИСОК (show-card = false)
+                    if !root.show-card: ListView {
+                        vertical-stretch: 1;
+                        for item in root.contents-model: Rectangle {
+                            height: 28px;
+                            background: item.id == root.status-id ? #d0e4ff : transparent;
 
-                        TouchArea {
-                            double-clicked => { root.open-properties(bm.id); }
+                            HorizontalLayout {
+                                padding-left: 8px;
+                                padding-top: 4px;
+                                spacing: 12px;
+                                Text {
+                                    width: 200px;
+                                    text: (item.is_folder ? "📁 " : "") + item.title;
+                                    vertical-alignment: center;
+                                }
+                                Text {
+                                    text: item.url;
+                                    color: #666666;
+                                    vertical-alignment: center;
+                                }
+                            }
+
+                            TouchArea {
+                                clicked        => { root.list-item-clicked(item.id, item.is_folder);   }
+                                double-clicked => { root.list-item-activated(item.id, item.is_folder); }
+                            }
                         }
                     }
-                }
-            }
-        }
-    }
 
-    // Properties dialog — modal overlay, drawn on top of main content
+                    // СТАТУСБАР (только в режиме списка, при выбранной ссылке)
+                    if !root.show-card && root.status-visible: Rectangle {
+                        height: 58px;
+                        background: #f5f5f5;
+                        border-color: #cccccc;
+                        border-width: 1px;
+
+                        VerticalLayout {
+                            padding: 4px;
+                            spacing: 2px;
+                            Text {
+                                text: root.status-url;
+                                font-size: 12px;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: root.status-note;
+                                font-size: 11px;
+                                color: #555555;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: "Добавлено: " + root.status-created
+                                    + "  Рисунок: —  Визит: " + root.status-visited;
+                                font-size: 10px;
+                                color: #888888;
+                            }
+                        }
+                    }
+
+                    // КАРТОЧКА (show-card = true)
+                    if root.show-card: VerticalBox {
+                        vertical-stretch: 1;
+                        padding: 16px;
+                        spacing: 12px;
+
+                        Text {
+                            text: root.card-title;
+                            font-size: 18px;
+                            font-weight: 700;
+                            wrap: word-wrap;
+                        }
+                        Text {
+                            text: root.card-url;
+                            color: #0066cc;
+                            font-size: 12px;
+                            overflow: elide;
+                        }
+                        Rectangle {
+                            height: 200px;
+                            background: #e8e8e8;
+                            border-radius: 4px;
+                            border-color: #cccccc;
+                            border-width: 1px;
+                            Text {
+                                text: "[ превью ]";
+                                color: #aaaaaa;
+                                horizontal-alignment: center;
+                                vertical-alignment: center;
+                            }
+                        }
+                        HorizontalBox {
+                            Button {
+                                text: "Edit…";
+                                clicked => { root.open-properties(root.card-id); }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                    }
+
+                } // VerticalLayout
+            } // Rectangle правая панель
+        } // HorizontalBox основная область
+    } // VerticalBox корень
+
+    // ══ Диалог свойств — модальный оверлей ══
     if root.prop-visible: Rectangle {
         x: 0; y: 0;
         width: root.width;
         height: root.height;
         background: #00000055;
 
-        TouchArea { /* absorb backdrop clicks so main UI is blocked */ }
+        TouchArea { /* поглощает клики на подложку */ }
 
         Rectangle {
             x: (root.width  - self.width)  / 2;
