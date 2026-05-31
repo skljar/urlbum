@@ -60,7 +60,11 @@ fn normalize_url(u: &str) -> String {
 
 /// Импортирует ua.dat в таблицу nodes.
 /// Возвращает число импортированных записей или описание ошибки.
-pub fn import_ua_dat(conn: &Connection, path: &str) -> Result<usize, String> {
+pub fn import_ua_dat(
+    conn: &Connection,
+    path: &str,
+    progress: impl Fn(usize) + Send,
+) -> Result<usize, String> {
     let file = File::open(path)
         .map_err(|e| format!("Cannot open {path}: {e}"))?;
     let mut reader = BufReader::new(file);
@@ -141,14 +145,13 @@ pub fn import_ua_dat(conn: &Connection, path: &str) -> Result<usize, String> {
         parent_stack.push(Some(conn.last_insert_rowid()));
         count += 1;
         if count % 10_000 == 0 {
-            eprintln!("Imported {count}...");
+            progress(count);
         }
     }
 
     conn.execute_batch("COMMIT")
         .map_err(|e| format!("COMMIT failed: {e}"))?;
 
-    eprintln!("Imported {count} records total.");
     Ok(count)
 }
 
@@ -208,7 +211,7 @@ mod tests {
         if !std::path::Path::new(path).exists() { return; }
 
         let conn = test_db();
-        let count = import_ua_dat(&conn, path).expect("import failed");
+        let count = import_ua_dat(&conn, path, |_| {}).expect("import failed");
         assert!(count > 0, "import produced no records");
 
         // Итого в БД совпадает с возвращённым count

@@ -16,7 +16,8 @@ pub struct Node {
 pub fn open(path: &str) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS nodes (
+        "PRAGMA busy_timeout = 5000;
+         CREATE TABLE IF NOT EXISTS nodes (
             id       INTEGER PRIMARY KEY AUTOINCREMENT,
             parent   INTEGER,
             kind     TEXT NOT NULL DEFAULT 'bookmark',

@@ -67,6 +67,11 @@ export component AppWindow inherits Window {
     callback ctx-request(int, bool);        // ПКМ: id, is_folder
     callback ctx-open-browser(int);         // открыть ссылку в браузере
     callback import-ua-dat();               // импорт из ua.dat
+    callback import-done();                 // вызывается из invoke_from_event_loop по завершении
+
+    // --- Прогресс импорта ---
+    in-out property <bool>   import-in-progress: false;
+    in-out property <string> import-status: "";
 
     VerticalBox {
         // Тулбар
@@ -75,7 +80,8 @@ export component AppWindow inherits Window {
             Button { text: "New Folder";   clicked => { root.new-folder();      } }
             Button { text: "New Bookmark"; clicked => { root.new-bookmark();    } }
             Button { text: "Delete";       clicked => { root.delete-selected(); } }
-            Button { text: "Import ua.dat"; clicked => { root.import-ua-dat();  } }
+            Button { text: "Import ua.dat"; enabled: !root.import-in-progress; clicked => { root.import-ua-dat(); } }
+            Text { text: root.import-status; vertical-alignment: center; color: #555555; font-size: 12px; }
             Rectangle { horizontal-stretch: 1; }
         }
 

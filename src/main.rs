@@ -400,20 +400,65 @@ fn main() {
         refresh_contents(&s, &w);
     });
 
-    // ── Импорт ua.dat ─────────────────────────────────────────────────────────
+    // ── Завершение импорта (вызывается из invoke_from_event_loop) ─────────────
     let (sc, ww) = (Rc::clone(&state), window.as_weak());
-    window.on_import_ua_dat(move || {
-        let path = r"C:\Projects\url-album-2\ua.dat";
+    window.on_import_done(move || {
         let s = sc.borrow();
-        match import::import_ua_dat(&s.db, path) {
-            Ok(count) => {
-                eprintln!("Imported {count} records from ua.dat");
-                let w = ww.upgrade().unwrap();
-                refresh_tree(&s, &w);
-                refresh_contents(&s, &w);
-            }
-            Err(e) => eprintln!("Import error: {e}"),
-        }
+        let w = ww.upgrade().unwrap();
+        refresh_tree(&s, &w);
+        refresh_contents(&s, &w);
+    });
+
+    // ── Импорт ua.dat — фоновый поток ─────────────────────────────────────────
+    let db_path_for_import = db_path.to_str().unwrap().to_string();
+    let ww = window.as_weak();
+    window.on_import_ua_dat(move || {
+        let w = ww.upgrade().unwrap();
+        w.set_import_in_progress(true);
+        w.set_import_status("Импортирую...".into());
+
+        let db = db_path_for_import.clone();
+        let ww2 = ww.clone();
+        std::thread::spawn(move || {
+            let conn = match rusqlite::Connection::open(&db) {
+                Ok(c) => c,
+                Err(e) => {
+                    slint::invoke_from_event_loop(move || {
+                        if let Some(w) = ww2.upgrade() {
+                            w.set_import_status(format!("Ошибка БД: {e}").into());
+                            w.set_import_in_progress(false);
+                        }
+                    }).ok();
+                    return;
+                }
+            };
+            let _ = conn.execute_batch("PRAGMA busy_timeout = 5000");
+
+            let ww_progress = ww2.clone();
+            let result = import::import_ua_dat(
+                &conn,
+                r"C:\Projects\url-album-2\ua.dat",
+                move |count| {
+                    let ww = ww_progress.clone();
+                    slint::invoke_from_event_loop(move || {
+                        if let Some(w) = ww.upgrade() {
+                            w.set_import_status(format!("Импортировано {count}...").into());
+                        }
+                    }).ok();
+                },
+            );
+
+            slint::invoke_from_event_loop(move || {
+                if let Some(w) = ww2.upgrade() {
+                    match result {
+                        Ok(n)  => w.set_import_status(format!("Готово: {n} записей").into()),
+                        Err(e) => w.set_import_status(format!("Ошибка: {e}").into()),
+                    }
+                    w.set_import_in_progress(false);
+                    w.invoke_import_done();
+                }
+            }).ok();
+        });
     });
 
     // ── Отменить диалог ───────────────────────────────────────────────────────
