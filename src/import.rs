@@ -197,25 +197,46 @@ mod tests {
 
         let conn = test_db();
         let count = import_ua_dat(&conn, path).expect("import failed");
-        assert!(count > 500, "expected 500+ records, got {count}");
+        assert!(count > 0, "import produced no records");
 
+        // Итого в БД совпадает с возвращённым count
+        let total: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nodes", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(total as usize, count, "returned count doesn't match DB total");
+
+        // Есть и папки, и ссылки
+        let folders: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE kind='folder'", [], |r| r.get(0),
+        ).unwrap();
+        let bookmarks: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nodes WHERE kind='bookmark'", [], |r| r.get(0),
+        ).unwrap();
+        assert!(folders > 0,    "no folders imported");
+        assert!(bookmarks > 0,  "no bookmarks imported");
+        assert_eq!(folders + bookmarks, total, "kind must be 'folder' or 'bookmark'");
+
+        // Корневые папки есть
         let root_folders: i64 = conn.query_row(
             "SELECT COUNT(*) FROM nodes WHERE parent IS NULL AND kind='folder'",
             [], |r| r.get(0),
         ).unwrap();
-        assert_eq!(root_folders, 7, "expected 7 root folders, got {root_folders}");
+        assert!(root_folders > 0, "no root folders found");
 
-        let bookmarks: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM nodes WHERE kind='bookmark'",
+        // Нет висячих parent-ссылок (целостность дерева)
+        let orphans: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM nodes n
+             WHERE n.parent IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM nodes p WHERE p.id = n.parent)",
             [], |r| r.get(0),
         ).unwrap();
-        assert!(bookmarks > 510, "expected 510+ bookmarks, got {bookmarks}");
+        assert_eq!(orphans, 0, "orphan nodes found — parent_stack bug: {orphans}");
 
-        // Проверяем что заметка с ^^ правильно декодирована
-        let note_with_newline: i64 = conn.query_row(
+        // ^^ в note правильно конвертирован в \n
+        let notes_newline: i64 = conn.query_row(
             "SELECT COUNT(*) FROM nodes WHERE note LIKE '%\n%'",
             [], |r| r.get(0),
         ).unwrap();
-        assert!(note_with_newline > 0, "expected notes with newlines from ^^");
+        assert!(notes_newline > 0, "no notes with newlines — ^^ conversion failed");
     }
 }

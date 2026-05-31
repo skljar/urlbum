@@ -130,6 +130,7 @@ struct State {
 3. **Скриншоты** — Edge/Chrome Win10/11, `--headless=new` + `--user-data-dir`
 4. **Drag&drop, поиск** (Ctrl+F), sort_idx для порядка
 5. **Импорт браузерных закладок** — JSON/HTML
+6. **Потоковый импорт** — `import_ua_dat` сейчас читает файл целиком в память (`read` → `split`); для файлов 1–2 ГБ переделать на `BufReader` построчно
 
 ## Импорт ua.dat — формат
 
@@ -178,7 +179,8 @@ for line in lines {
 - `normalize_url("www.x.com")` → `"http://www.x.com"` (добавляет схему если нет `://`)
 - `import_ua_dat(conn, path)` — читает файл, парсит через стек родителей, одна транзакция (BEGIN/COMMIT), возвращает `Result<usize, String>`
 - Кнопка "Import ua.dat" в тулбаре → `on_import_ua_dat` в main.rs
-- 4 теста: `decode_cyrillic`, `date_converts_correctly`, `url_normalization`, `import_real_ua_dat` (инварианты: >500 записей, 7 корневых папок, ноты с `\n`)
+- 4 теста: `decode_cyrillic`, `date_converts_correctly`, `url_normalization`, `import_real_ua_dat`
+  — инварианты без чисел: count>0, total==count, folders>0, bookmarks>0, folders+bookmarks==total, root_folders>0, orphans==0, notes_with_newline>0
 
 ## Справочник
 
