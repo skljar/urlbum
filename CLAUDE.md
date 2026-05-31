@@ -120,15 +120,16 @@ struct State {
 - ✅ Открытие ссылки в браузере (двойной клик в дереве, ПКМ → Открыть)
 - ✅ touch_visited при открытии
 - ✅ album.db рядом с exe, данные сохраняются между запусками
-- ✅ 8 тестов DB-слоя (`cargo test`)
+- ✅ Импорт ua.dat: кнопка "Import ua.dat" в тулбаре, `src/import.rs`
+- ✅ 12 тестов (`cargo test`): 8 DB + 4 import (decode, date, url, real file)
 
 ## Очередь фич (приоритет)
 
-1. **Импорт** — ua.dat Win-1251, браузерные закладки JSON/HTML
-2. **Favicon** — логику взять из старого URL-Album-3 как справочника
-3. **Открытие в браузере из списка** — двойной клик по ссылке в правой панели (сейчас только карточка)
-4. **Скриншоты** — Edge/Chrome Win10/11, `--headless=new` + `--user-data-dir`
-5. **Drag&drop, поиск** (Ctrl+F), sort_idx для порядка
+1. **Favicon** — логику взять из старого URL-Album-3 как справочника
+2. **Открытие в браузере из списка** — двойной клик по ссылке в правой панели (сейчас только карточка)
+3. **Скриншоты** — Edge/Chrome Win10/11, `--headless=new` + `--user-data-dir`
+4. **Drag&drop, поиск** (Ctrl+F), sort_idx для порядка
+5. **Импорт браузерных закладок** — JSON/HTML
 
 ## Импорт ua.dat — формат
 
@@ -170,7 +171,14 @@ for line in lines {
 }
 ```
 
-**Следующий шаг:** написать парсер (`src/import.rs`), кнопку/меню «Импорт ua.dat», тест парсера на реальном файле.
+**Реализация (`src/import.rs`, 2026-05-31):**
+- `WIN1251: [u32; 128]` — статическая таблица Win-1251→Unicode, байты 0x80..=0xFF
+- `decode_win1251(bytes)` — байты в UTF-8 String через таблицу
+- `parse_ua_date("150905172253")` → `"2005-09-15 17:22:53"` (DDMMYYHHMMSS → ISO)
+- `normalize_url("www.x.com")` → `"http://www.x.com"` (добавляет схему если нет `://`)
+- `import_ua_dat(conn, path)` — читает файл, парсит через стек родителей, одна транзакция (BEGIN/COMMIT), возвращает `Result<usize, String>`
+- Кнопка "Import ua.dat" в тулбаре → `on_import_ua_dat` в main.rs
+- 4 теста: `decode_cyrillic`, `date_converts_correctly`, `url_normalization`, `import_real_ua_dat` (инварианты: >500 записей, 7 корневых папок, ноты с `\n`)
 
 ## Справочник
 
