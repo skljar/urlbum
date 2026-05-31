@@ -130,6 +130,48 @@ struct State {
 4. **Скриншоты** — Edge/Chrome Win10/11, `--headless=new` + `--user-data-dir`
 5. **Drag&drop, поиск** (Ctrl+F), sort_idx для порядка
 
+## Импорт ua.dat — формат
+
+**Файл:** `C:\Projects\url-album-2\ua.dat` (только читать). `ua.dat.bak` — оригинал 2024-06-06.
+
+**Тип:** текстовый, Windows-1251, CRLF. ~573 строк: 55 папок, 517 ссылок, глубина до 4, 7 корневых папок.
+
+**Поля через TAB (7 полей, индексы 0–6):**
+
+| Индекс | Папка | Ссылка |
+|---|---|---|
+| `[0]` | title | title (если нет имени — совпадает с URL) |
+| `[1]` | `#` (маркер папки) | URL |
+| `[2]` | пусто | имя файла превью `YYMMDDHHMMSS.png` или пусто |
+| `[3]` | note или пусто | note или пусто |
+| `[4]` | created `DDMMYYHHMMSS` или пусто | created |
+| `[5]` | visited или пусто | visited или пусто |
+| `[6]` | `0` (флаг) | `0` |
+
+**Иерархия:** число ведущих табов = глубина в дереве (`depth=0` — корень, `depth=1` — дочерний и т.д.).
+
+**Нюансы:**
+- `^^` в note = перенос строки
+- URL бывает без схемы (`www.example.com` без `http://`)
+- Дата: `DDMMYYHHMMSS` — `150905172253` = 15 сен 2005, 17:22:53
+- Папки тоже могут иметь note
+
+**Алгоритм парсера (стек родителей):**
+```rust
+let mut parent_stack: Vec<Option<i64>> = vec![None; max_depth + 2];
+
+for line in lines {
+    let depth = count_leading_tabs(&line);
+    let parts = line.trim_start_matches('\t').split('\t').collect();
+    let is_folder = parts[1] == "#";
+    let parent = parent_stack[depth];           // parent на уровне depth
+    let id = db::insert_node(...)?;
+    parent_stack[depth + 1] = Some(id);        // этот узел станет родителем для depth+1
+}
+```
+
+**Следующий шаг:** написать парсер (`src/import.rs`), кнопку/меню «Импорт ua.dat», тест парсера на реальном файле.
+
 ## Справочник
 
 Старый проект url-album-3 (репо github.com/skljar/url-album-2) — источник
