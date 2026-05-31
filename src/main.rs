@@ -266,34 +266,30 @@ fn main() {
         }
     });
 
-    // ── Новая папка ───────────────────────────────────────────────────────────
-    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    // ── Новая папка — открыть диалог создания ────────────────────────────────
+    let ww = window.as_weak();
     window.on_new_folder(move || {
-        let mut s = sc.borrow_mut();
-        let parent = s.current_folder;
-        if let Ok(new_id) = db::insert_node(&s.db, parent, "folder", "New Folder", None) {
-            if let Some(p) = parent {
-                s.expanded.insert(p);
-            }
-            s.selected_id        = Some(new_id);
-            s.selected_is_folder = true;
-        }
         let w = ww.upgrade().unwrap();
-        w.set_selected_id(s.selected_id.unwrap_or(-1) as i32);
-        w.set_show_card(false);
-        refresh_tree(&s, &w);
-        refresh_contents(&s, &w);
+        w.set_prop_is_new(true);
+        w.set_prop_is_folder(true);
+        w.set_prop_id(-1);
+        w.set_prop_title("".into());
+        w.set_prop_url("".into());
+        w.set_prop_note("".into());
+        w.set_prop_visible(true);
     });
 
-    // ── Новая ссылка ──────────────────────────────────────────────────────────
-    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    // ── Новая ссылка — открыть диалог создания ───────────────────────────────
+    let ww = window.as_weak();
     window.on_new_bookmark(move || {
-        let mut s = sc.borrow_mut();
-        let parent = s.current_folder;
-        let _ = db::insert_node(&s.db, parent, "bookmark", "New Bookmark", Some("https://"));
         let w = ww.upgrade().unwrap();
-        refresh_tree(&s, &w);
-        refresh_contents(&s, &w);
+        w.set_prop_is_new(true);
+        w.set_prop_is_folder(false);
+        w.set_prop_id(-1);
+        w.set_prop_title("".into());
+        w.set_prop_url("https://".into());
+        w.set_prop_note("".into());
+        w.set_prop_visible(true);
     });
 
     // ── Удалить выбранный узел ────────────────────────────────────────────────
@@ -358,6 +354,7 @@ fn main() {
         if let Ok(node) = db::get_node(&s.db, id64) {
             let w = ww.upgrade().unwrap();
             w.set_prop_id(id);
+            w.set_prop_is_new(false);
             w.set_prop_title(node.title.into());
             w.set_prop_url(node.url.unwrap_or_default().into());
             w.set_prop_note(node.note.unwrap_or_default().into());
@@ -370,18 +367,34 @@ fn main() {
     let (sc, ww) = (Rc::clone(&state), window.as_weak());
     window.on_save_properties(move || {
         let w = ww.upgrade().unwrap();
-        let id       = w.get_prop_id() as i64;
-        let title    = w.get_prop_title();
-        let url_str  = w.get_prop_url();
-        let note_str = w.get_prop_note();
+        let is_new    = w.get_prop_is_new();
+        let is_folder = w.get_prop_is_folder();
+        let title     = w.get_prop_title();
+        let url_str   = w.get_prop_url();
+        let note_str  = w.get_prop_note();
         let url  = if url_str.is_empty()  { None } else { Some(url_str.as_str())  };
         let note = if note_str.is_empty() { None } else { Some(note_str.as_str()) };
-        {
-            let s = sc.borrow();
+
+        let mut s = sc.borrow_mut();
+
+        if is_new {
+            // Режим создания: INSERT нового узла
+            let kind   = if is_folder { "folder" } else { "bookmark" };
+            let parent = s.current_folder;
+            if let Ok(new_id) = db::insert_node(&s.db, parent, kind, title.as_str(), url, note) {
+                if let Some(p) = parent { s.expanded.insert(p); }
+                s.selected_id        = Some(new_id);
+                s.selected_is_folder = is_folder;
+            }
+        } else {
+            // Режим редактирования: UPDATE существующего
+            let id = w.get_prop_id() as i64;
             let _ = db::update_node(&s.db, id, title.as_str(), url, note);
         }
+
         w.set_prop_visible(false);
-        let s = sc.borrow();
+        w.set_prop_is_new(false);
+        w.set_selected_id(s.selected_id.unwrap_or(-1) as i32);
         refresh_tree(&s, &w);
         refresh_contents(&s, &w);
     });

@@ -84,10 +84,11 @@ pub fn insert_node(
     kind: &str,
     title: &str,
     url: Option<&str>,
+    note: Option<&str>,
 ) -> Result<i64> {
     conn.execute(
-        "INSERT INTO nodes (parent, kind, title, url) VALUES (?1, ?2, ?3, ?4)",
-        params![parent, kind, title, url],
+        "INSERT INTO nodes (parent, kind, title, url, note) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![parent, kind, title, url, note],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -155,7 +156,7 @@ mod tests {
     #[test]
     fn insert_root_folder_and_get_it() {
         let conn = test_db();
-        let id = insert_node(&conn, None, "folder", "Test Folder", None).unwrap();
+        let id = insert_node(&conn, None, "folder", "Test Folder", None, None).unwrap();
         let children = get_children(&conn, None).unwrap();
         assert_eq!(children.len(), 1);
         assert_eq!(children[0].id, id);
@@ -167,8 +168,8 @@ mod tests {
     #[test]
     fn nested_folder_under_parent_not_root() {
         let conn = test_db();
-        let parent_id = insert_node(&conn, None, "folder", "Parent", None).unwrap();
-        let child_id = insert_node(&conn, Some(parent_id), "folder", "Child", None).unwrap();
+        let parent_id = insert_node(&conn, None, "folder", "Parent", None, None).unwrap();
+        let child_id = insert_node(&conn, Some(parent_id), "folder", "Child", None, None).unwrap();
 
         let root = get_children(&conn, None).unwrap();
         assert_eq!(root.len(), 1, "root must contain only the parent");
@@ -181,9 +182,9 @@ mod tests {
     #[test]
     fn delete_removes_node_and_all_descendants() {
         let conn = test_db();
-        let parent_id = insert_node(&conn, None, "folder", "Parent", None).unwrap();
-        insert_node(&conn, Some(parent_id), "bookmark", "Link", Some("https://example.com")).unwrap();
-        insert_node(&conn, Some(parent_id), "folder", "Sub", None).unwrap();
+        let parent_id = insert_node(&conn, None, "folder", "Parent", None, None).unwrap();
+        insert_node(&conn, Some(parent_id), "bookmark", "Link", Some("https://example.com"), None).unwrap();
+        insert_node(&conn, Some(parent_id), "folder", "Sub", None, None).unwrap();
 
         delete_node(&conn, parent_id).unwrap();
 
@@ -194,7 +195,7 @@ mod tests {
     #[test]
     fn insert_bookmark_stores_url() {
         let conn = test_db();
-        let id = insert_node(&conn, None, "bookmark", "Example", Some("https://example.com")).unwrap();
+        let id = insert_node(&conn, None, "bookmark", "Example", Some("https://example.com"), None).unwrap();
         let items = get_children(&conn, None).unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].id, id);
@@ -204,7 +205,7 @@ mod tests {
     #[test]
     fn get_node_returns_correct_node() {
         let conn = test_db();
-        let id = insert_node(&conn, None, "bookmark", "Test", Some("https://test.com")).unwrap();
+        let id = insert_node(&conn, None, "bookmark", "Test", Some("https://test.com"), None).unwrap();
         let node = get_node(&conn, id).unwrap();
         assert_eq!(node.id, id);
         assert_eq!(node.title, "Test");
@@ -217,9 +218,18 @@ mod tests {
     }
 
     #[test]
+    fn insert_with_note_stores_it() {
+        let conn = test_db();
+        let id = insert_node(&conn, None, "bookmark", "Title", Some("https://x.com"), Some("my note")).unwrap();
+        let node = get_node(&conn, id).unwrap();
+        assert_eq!(node.note.as_deref(), Some("my note"));
+        assert_eq!(node.title, "Title");
+    }
+
+    #[test]
     fn touch_visited_sets_visited_date() {
         let conn = test_db();
-        let id = insert_node(&conn, None, "bookmark", "Test", Some("https://test.com")).unwrap();
+        let id = insert_node(&conn, None, "bookmark", "Test", Some("https://test.com"), None).unwrap();
         assert_eq!(get_node(&conn, id).unwrap().visited, None, "visited должен быть NULL после вставки");
         touch_visited(&conn, id).unwrap();
         assert!(get_node(&conn, id).unwrap().visited.is_some(), "visited должен быть заполнен после touch_visited");
@@ -228,7 +238,7 @@ mod tests {
     #[test]
     fn update_changes_title_url_note() {
         let conn = test_db();
-        let id = insert_node(&conn, None, "bookmark", "Old Title", Some("https://old.com")).unwrap();
+        let id = insert_node(&conn, None, "bookmark", "Old Title", Some("https://old.com"), None).unwrap();
         update_node(&conn, id, "New Title", Some("https://new.com"), Some("my note")).unwrap();
         let node = get_node(&conn, id).unwrap();
         assert_eq!(node.title, "New Title");

@@ -42,6 +42,7 @@ export component AppWindow inherits Window {
     in-out property <string> prop-url;
     in-out property <string> prop-note;
     in-out property <bool>   prop-is-folder: false;
+    in-out property <bool>   prop-is-new: false;       // true = создание, false = редактирование
     in-out property <bool>   prop-visible: false;
 
     // --- Контекстное меню ---
@@ -347,7 +348,9 @@ export component AppWindow inherits Window {
                 spacing: 10px;
 
                 Text {
-                    text: root.prop-is-folder ? "Folder Properties" : "Bookmark Properties";
+                    text: root.prop-is-new
+                        ? (root.prop-is-folder ? "Новая папка" : "Новая ссылка")
+                        : (root.prop-is-folder ? "Folder Properties" : "Bookmark Properties");
                     font-size: 14px;
                     font-weight: 700;
                 }
