@@ -140,11 +140,15 @@ pub fn import_ua_dat(conn: &Connection, path: &str) -> Result<usize, String> {
         parent_stack.truncate(depth + 1);
         parent_stack.push(Some(conn.last_insert_rowid()));
         count += 1;
+        if count % 10_000 == 0 {
+            eprintln!("Imported {count}...");
+        }
     }
 
     conn.execute_batch("COMMIT")
         .map_err(|e| format!("COMMIT failed: {e}"))?;
 
+    eprintln!("Imported {count} records total.");
     Ok(count)
 }
 
