@@ -122,6 +122,7 @@ struct State {
 - ✅ album.db рядом с exe, данные сохраняются между запусками
 - ✅ Импорт ua.dat: кнопка "Import ua.dat" в тулбаре, `src/import.rs`
 - ✅ 12 тестов (`cargo test`): 8 DB + 4 import (decode, date, url, real file)
+- ✅ `import_ua_dat` потоковый: `BufReader` + `read_until` (не грузит файл в память), один `prepare` вне цикла, `parent_stack` с `truncate` (произвольная глубина вложенности)
 
 ## Очередь фич (приоритет)
 
@@ -130,7 +131,6 @@ struct State {
 3. **Скриншоты** — Edge/Chrome Win10/11, `--headless=new` + `--user-data-dir`
 4. **Drag&drop, поиск** (Ctrl+F), sort_idx для порядка
 5. **Импорт браузерных закладок** — JSON/HTML
-6. **Потоковый импорт** — `import_ua_dat` сейчас читает файл целиком в память (`read` → `split`); для файлов 1–2 ГБ переделать на `BufReader` построчно
 
 ## Импорт ua.dat — формат
 
@@ -160,15 +160,19 @@ struct State {
 
 **Алгоритм парсера (стек родителей):**
 ```rust
-let mut parent_stack: Vec<Option<i64>> = vec![None; max_depth + 2];
+let mut parent_stack: Vec<Option<i64>> = vec![None]; // растёт динамически
 
-for line in lines {
-    let depth = count_leading_tabs(&line);
-    let parts = line.trim_start_matches('\t').split('\t').collect();
+loop {
+    // read_until(b'\n') → срезать CRLF байтами → decode_win1251
+    let depth = buf.iter().take_while(|&&b| b == b'\t').count();
+    let line = decode_win1251(&buf[depth..]);
+    let parts: Vec<&str> = line.split('\t').collect();
     let is_folder = parts[1] == "#";
+    while parent_stack.len() <= depth { parent_stack.push(None); }
     let parent = parent_stack[depth];           // parent на уровне depth
-    let id = db::insert_node(...)?;
-    parent_stack[depth + 1] = Some(id);        // этот узел станет родителем для depth+1
+    let id = stmt.execute(...); conn.last_insert_rowid();
+    parent_stack.truncate(depth + 1);          // обрезать глубже текущего
+    parent_stack.push(Some(id));               // parent_stack[depth+1] = id
 }
 ```
 
@@ -177,7 +181,7 @@ for line in lines {
 - `decode_win1251(bytes)` — байты в UTF-8 String через таблицу
 - `parse_ua_date("150905172253")` → `"2005-09-15 17:22:53"` (DDMMYYHHMMSS → ISO)
 - `normalize_url("www.x.com")` → `"http://www.x.com"` (добавляет схему если нет `://`)
-- `import_ua_dat(conn, path)` — читает файл, парсит через стек родителей, одна транзакция (BEGIN/COMMIT), возвращает `Result<usize, String>`
+- `import_ua_dat(conn, path)` — потоковое чтение (`BufReader` + `read_until`), один `prepare` вне цикла, `parent_stack` с `truncate` (произвольная глубина), одна транзакция (BEGIN/COMMIT), возвращает `Result<usize, String>`
 - Кнопка "Import ua.dat" в тулбаре → `on_import_ua_dat` в main.rs
 - 4 теста: `decode_cyrillic`, `date_converts_correctly`, `url_normalization`, `import_real_ua_dat`
   — инварианты без чисел: count>0, total==count, folders>0, bookmarks>0, folders+bookmarks==total, root_folders>0, orphans==0, notes_with_newline>0

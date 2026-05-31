@@ -1,3 +1,5 @@
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use rusqlite::{Connection, params};
 
 // Windows-1251 → Unicode: байты 0x80..=0xFF
@@ -59,35 +61,45 @@ fn normalize_url(u: &str) -> String {
 /// Импортирует ua.dat в таблицу nodes.
 /// Возвращает число импортированных записей или описание ошибки.
 pub fn import_ua_dat(conn: &Connection, path: &str) -> Result<usize, String> {
-    let bytes = std::fs::read(path)
-        .map_err(|e| format!("Cannot read {path}: {e}"))?;
-    let text = decode_win1251(&bytes);
-
-    // Поддерживаем и CRLF, и LF
-    let lines: Vec<&str> = text.split('\n')
-        .map(|l| l.trim_end_matches('\r'))
-        .collect();
+    let file = File::open(path)
+        .map_err(|e| format!("Cannot open {path}: {e}"))?;
+    let mut reader = BufReader::new(file);
+    let mut buf: Vec<u8> = Vec::new();
 
     // Стек родителей: parent_stack[depth] = id родителя для узлов глубины depth
-    let mut parent_stack: Vec<Option<i64>> = vec![None; 8];
+    let mut parent_stack: Vec<Option<i64>> = vec![None];
     let mut count = 0usize;
 
     conn.execute_batch("BEGIN TRANSACTION")
         .map_err(|e| format!("BEGIN failed: {e}"))?;
 
-    for line in &lines {
-        if line.is_empty() { continue; }
+    let mut stmt = conn.prepare(
+        "INSERT INTO nodes (parent, kind, title, url, thumb, note, created, visited)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    ).map_err(|e| format!("Prepare failed: {e}"))?;
 
-        // Глубина = число ведущих табов
-        let depth = line.bytes().take_while(|&b| b == b'\t').count();
-        let content = &line[depth..];
-        if content.is_empty() { continue; }
+    loop {
+        buf.clear();
+        let n = reader.read_until(b'\n', &mut buf)
+            .map_err(|e| format!("Read error: {e}"))?;
+        if n == 0 { break; }
 
-        let parts: Vec<&str> = content.split('\t').collect();
+        // Срезаем CRLF/LF байтами до декодирования (\n = 0x0A, \r = 0x0D — ASCII-safe)
+        if buf.ends_with(b"\n") { buf.pop(); }
+        if buf.ends_with(b"\r") { buf.pop(); }
+
+        if buf.is_empty() { continue; }
+
+        // Глубина = число ведущих табов (0x09)
+        let depth = buf.iter().take_while(|&&b| b == b'\t').count();
+        if depth == buf.len() { continue; } // строка из одних табов
+
+        let line = decode_win1251(&buf[depth..]);
+        let parts: Vec<&str> = line.split('\t').collect();
         let title = parts[0];
         if title.is_empty() { continue; }
 
-        let field1  = parts.get(1).copied().unwrap_or("");
+        let field1 = parts.get(1).copied().unwrap_or("");
         let is_folder = field1 == "#";
 
         let url: Option<String> = if is_folder || field1.is_empty() {
@@ -115,22 +127,18 @@ pub fn import_ua_dat(conn: &Connection, path: &str) -> Result<usize, String> {
 
         let kind = if is_folder { "folder" } else { "bookmark" };
 
-        // Расширяем стек при необходимости
-        while parent_stack.len() <= depth + 1 {
-            parent_stack.push(None);
-        }
+        while parent_stack.len() <= depth { parent_stack.push(None); }
         let parent = parent_stack[depth];
 
-        if let Err(e) = conn.execute(
-            "INSERT INTO nodes (parent, kind, title, url, thumb, note, created, visited)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        if let Err(e) = stmt.execute(
             params![parent, kind, title, url, thumb, note, created, visited],
         ) {
             let _ = conn.execute_batch("ROLLBACK");
             return Err(format!("Insert failed at line {count}: {e}"));
         }
 
-        parent_stack[depth + 1] = Some(conn.last_insert_rowid());
+        parent_stack.truncate(depth + 1);
+        parent_stack.push(Some(conn.last_insert_rowid()));
         count += 1;
     }
 
