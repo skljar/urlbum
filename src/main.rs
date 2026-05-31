@@ -318,6 +318,38 @@ fn main() {
         refresh_contents(&s, &w);
     });
 
+    // ── Контекстное меню: ПКМ ────────────────────────────────────────────────
+    // ctx-x/ctx-y уже выставлены из Slint до вызова callback
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_ctx_request(move |id, is_folder| {
+        let id64 = id as i64;
+        let mut s = sc.borrow_mut();
+        s.selected_id        = Some(id64);
+        s.selected_is_folder = is_folder;
+        if is_folder {
+            s.current_folder = Some(id64);
+        }
+        let w = ww.upgrade().unwrap();
+        w.set_ctx_id(id);
+        w.set_ctx_is_folder(is_folder);
+        w.set_selected_id(id);
+        w.set_ctx_visible(true);
+    });
+
+    // ── Открыть в браузере через ПКМ ─────────────────────────────────────────
+    let sc = Rc::clone(&state);
+    window.on_ctx_open_browser(move |id| {
+        let id64 = id as i64;
+        let s = sc.borrow();
+        if let Ok(node) = db::get_node(&s.db, id64) {
+            let url = node.url.unwrap_or_default();
+            if !url.is_empty() {
+                let _ = webbrowser::open(&url);
+                let _ = db::touch_visited(&s.db, id64);
+            }
+        }
+    });
+
     // ── Открыть диалог свойств ────────────────────────────────────────────────
     let (sc, ww) = (Rc::clone(&state), window.as_weak());
     window.on_open_properties(move |id| {

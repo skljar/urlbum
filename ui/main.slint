@@ -44,18 +44,27 @@ export component AppWindow inherits Window {
     in-out property <bool>   prop-is-folder: false;
     in-out property <bool>   prop-visible: false;
 
+    // --- Контекстное меню ---
+    in-out property <bool>  ctx-visible: false;
+    in-out property <int>   ctx-id: -1;
+    in-out property <bool>  ctx-is-folder: false;
+    in-out property <float> ctx-x: 0;   // позиция курсора в координатах окна
+    in-out property <float> ctx-y: 0;
+
     // --- Callbacks ---
     callback new-folder();
     callback new-bookmark();
     callback delete-selected();
-    callback tree-toggle-expand(int);            // клик по значку ▶/▼
-    callback tree-item-clicked(int, bool);      // одиночный клик по названию в дереве
-    callback tree-item-activated(int, bool);    // двойной клик по названию в дереве
-    callback list-item-clicked(int, bool);      // id, is_folder — правая панель, одиночный клик
-    callback list-item-activated(int, bool);    // id, is_folder — правая панель, двойной клик
+    callback tree-toggle-expand(int);
+    callback tree-item-clicked(int, bool);
+    callback tree-item-activated(int, bool);
+    callback list-item-clicked(int, bool);
+    callback list-item-activated(int, bool);
     callback open-properties(int);
     callback save-properties();
     callback cancel-properties();
+    callback ctx-request(int, bool);        // ПКМ: id, is_folder
+    callback ctx-open-browser(int);         // открыть ссылку в браузере
 
     VerticalBox {
         // Тулбар
@@ -88,6 +97,14 @@ export component AppWindow inherits Window {
                             if item.is_folder: TouchArea {
                                 width: 20px;
                                 clicked => { root.tree-toggle-expand(item.id); }
+                                pointer-event(event) => {
+                                    if event.button == PointerEventButton.right
+                                            && event.kind == PointerEventKind.down {
+                                        root.ctx-x = (self.absolute-position.x + self.mouse-x) / 1px;
+                                        root.ctx-y = (self.absolute-position.y + self.mouse-y) / 1px;
+                                        root.ctx-request(item.id, item.is_folder);
+                                    }
+                                }
                                 VerticalLayout {
                                     alignment: center;
                                     Text {
@@ -102,6 +119,14 @@ export component AppWindow inherits Window {
                                 horizontal-stretch: 1;
                                 clicked        => { root.tree-item-clicked(item.id, item.is_folder);   }
                                 double-clicked => { root.tree-item-activated(item.id, item.is_folder); }
+                                pointer-event(event) => {
+                                    if event.button == PointerEventButton.right
+                                            && event.kind == PointerEventKind.down {
+                                        root.ctx-x = (self.absolute-position.x + self.mouse-x) / 1px;
+                                        root.ctx-y = (self.absolute-position.y + self.mouse-y) / 1px;
+                                        root.ctx-request(item.id, item.is_folder);
+                                    }
+                                }
                                 HorizontalLayout {
                                     padding-left: 4px;
                                     padding-top: 4px;
@@ -150,6 +175,14 @@ export component AppWindow inherits Window {
                             TouchArea {
                                 clicked        => { root.list-item-clicked(item.id, item.is_folder);   }
                                 double-clicked => { root.list-item-activated(item.id, item.is_folder); }
+                                pointer-event(event) => {
+                                    if event.button == PointerEventButton.right
+                                            && event.kind == PointerEventKind.down {
+                                        root.ctx-x = (self.absolute-position.x + self.mouse-x) / 1px;
+                                        root.ctx-y = (self.absolute-position.y + self.mouse-y) / 1px;
+                                        root.ctx-request(item.id, item.is_folder);
+                                    }
+                                }
                             }
                         }
                     }
@@ -215,19 +248,80 @@ export component AppWindow inherits Window {
                                 vertical-alignment: center;
                             }
                         }
-                        HorizontalBox {
-                            Button {
-                                text: "Edit…";
-                                clicked => { root.open-properties(root.card-id); }
-                            }
-                            Rectangle { horizontal-stretch: 1; }
-                        }
+                        // Edit… убран — свойства через ПКМ
                     }
 
                 } // VerticalLayout
             } // Rectangle правая панель
         } // HorizontalBox основная область
     } // VerticalBox корень
+
+    // ══ Контекстное меню — оверлей у курсора ══
+    if root.ctx-visible: Rectangle {
+        x: 0; y: 0;
+        width: root.width;
+        height: root.height;
+        background: transparent;
+
+        // Подложка: клик вне меню — закрыть
+        TouchArea { clicked => { root.ctx-visible = false; } }
+
+        // Само меню — у курсора, с clamp по краям окна
+        Rectangle {
+            x: min(root.ctx-x * 1px, root.width  - self.width  - 4px);
+            y: min(root.ctx-y * 1px, root.height - self.height - 4px);
+            width: 160px;
+            height: root.ctx-is-folder ? 113px : 85px;
+            background: #ffffff;
+            border-color: #aaaaaa;
+            border-width: 1px;
+            border-radius: 3px;
+
+            VerticalLayout {
+
+                // ── Меню ПАПКИ ──
+                if root.ctx-is-folder: Rectangle {
+                    height: 28px;
+                    TouchArea { clicked => { root.new-folder();     root.ctx-visible = false; } }
+                    Text { x: 12px; text: "Новая папка";  vertical-alignment: center; height: 28px; }
+                }
+                if root.ctx-is-folder: Rectangle {
+                    height: 28px;
+                    TouchArea { clicked => { root.new-bookmark();   root.ctx-visible = false; } }
+                    Text { x: 12px; text: "Новая ссылка"; vertical-alignment: center; height: 28px; }
+                }
+                if root.ctx-is-folder: Rectangle { height: 1px; background: #dddddd; }
+                if root.ctx-is-folder: Rectangle {
+                    height: 28px;
+                    TouchArea { clicked => { root.open-properties(root.ctx-id); root.ctx-visible = false; } }
+                    Text { x: 12px; text: "Свойства";    vertical-alignment: center; height: 28px; }
+                }
+                if root.ctx-is-folder: Rectangle {
+                    height: 28px;
+                    TouchArea { clicked => { root.delete-selected(); root.ctx-visible = false; } }
+                    Text { x: 12px; text: "Удалить"; color: #cc2222; vertical-alignment: center; height: 28px; }
+                }
+
+                // ── Меню ССЫЛКИ ──
+                if !root.ctx-is-folder: Rectangle {
+                    height: 28px;
+                    TouchArea { clicked => { root.ctx-open-browser(root.ctx-id); root.ctx-visible = false; } }
+                    Text { x: 12px; text: "Открыть";     vertical-alignment: center; height: 28px; }
+                }
+                if !root.ctx-is-folder: Rectangle { height: 1px; background: #dddddd; }
+                if !root.ctx-is-folder: Rectangle {
+                    height: 28px;
+                    TouchArea { clicked => { root.open-properties(root.ctx-id); root.ctx-visible = false; } }
+                    Text { x: 12px; text: "Свойства";    vertical-alignment: center; height: 28px; }
+                }
+                if !root.ctx-is-folder: Rectangle {
+                    height: 28px;
+                    TouchArea { clicked => { root.delete-selected(); root.ctx-visible = false; } }
+                    Text { x: 12px; text: "Удалить"; color: #cc2222; vertical-alignment: center; height: 28px; }
+                }
+            }
+        }
+    }
 
     // ══ Диалог свойств — модальный оверлей ══
     if root.prop-visible: Rectangle {
