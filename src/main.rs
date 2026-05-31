@@ -46,10 +46,18 @@ fn build_tree_list(
     }
 }
 
+fn refresh_status(db: &rusqlite::Connection, window: &AppWindow) {
+    let count: i64 = db
+        .query_row("SELECT COUNT(*) FROM nodes", [], |r| r.get(0))
+        .unwrap_or(0);
+    window.set_status_count(count as i32);
+}
+
 fn refresh_tree(state: &State, window: &AppWindow) {
     let mut items: Vec<TreeItem> = Vec::new();
     build_tree_list(&state.db, None, 0, &state.expanded, &mut items);
     window.set_tree_model(Rc::new(VecModel::from(items)).into());
+    refresh_status(&state.db, window);
 }
 
 // ─── Обновление правого списка ───────────────────────────────────────────────
@@ -108,6 +116,11 @@ fn main() {
     let window = AppWindow::new().unwrap();
 
     {
+        let db_file = db_path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("album.db");
+        window.set_db_name(db_file.into());
+
         let s = state.borrow();
         refresh_tree(&s, &window);
         refresh_contents(&s, &window);
