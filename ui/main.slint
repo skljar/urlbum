@@ -76,6 +76,69 @@ export component AppWindow inherits Window {
     // --- Ширина левой панели (splitter) ---
     in-out property <length> tree-width: 250px;
 
+    // ══ Меню ════════════════════════════════════════════════════════════════════
+    MenuBar {
+
+        // ── Файл ──────────────────────────────────────────────────────────────
+        Menu {
+            title: "Файл";
+
+            Menu {
+                title: "Импорт";
+                MenuItem {
+                    title: "Импорт из ua.dat...";
+                    enabled: !root.import-in-progress;
+                    activated => { root.import-ua-dat(); }
+                }
+                MenuItem { title: "Импорт из браузера..."; enabled: false; }
+                MenuItem { title: "Импорт из HTML...";     enabled: false; }
+                MenuItem { title: "Импорт из TXT...";      enabled: false; }
+                MenuSeparator {}
+                MenuItem { title: "Экспорт в HTML..."; enabled: false; }
+                MenuItem { title: "Экспорт в TXT...";  enabled: false; }
+            }
+
+            MenuSeparator {}
+            MenuItem { title: "Создать базу данных..."; enabled: false; }
+            MenuItem { title: "Открыть базу данных..."; enabled: false; }
+            MenuSeparator {}
+            MenuItem { title: "Свойства базы данных";   enabled: false; }
+            MenuSeparator {}
+            MenuItem { title: "Настройки...";           enabled: false; }
+        }
+
+        // ── Ссылки ────────────────────────────────────────────────────────────
+        Menu {
+            title: "Ссылки";
+
+            MenuItem { title: "Новая папка";              activated => { root.new-folder();   } }
+            MenuItem { title: "Новая ссылка";             activated => { root.new-bookmark(); } }
+            MenuSeparator {}
+            MenuItem { title: "Удалить";                  activated => { root.delete-selected(); } }
+            MenuSeparator {}
+            MenuItem { title: "Открыть";                  activated => { root.ctx-open-browser(root.selected-id); } }
+            MenuItem { title: "Открыть с помощью...";     enabled: false; }
+            MenuSeparator {}
+            MenuItem { title: "Копировать URL";            enabled: false; }
+            MenuItem { title: "Свойства";                 activated => { root.open-properties(root.selected-id); } }
+        }
+
+        // ── Поиск ─────────────────────────────────────────────────────────────
+        Menu {
+            title: "Поиск";
+            MenuItem { title: "Найти..."; enabled: false; }
+        }
+
+        // ── Вид ───────────────────────────────────────────────────────────────
+        Menu {
+            title: "Вид";
+            MenuItem { title: "Развернуть все папки"; enabled: false; }
+            MenuItem { title: "Свернуть все папки";   enabled: false; }
+            MenuSeparator {}
+            MenuItem { title: "Светлая/Тёмная тема";  enabled: false; }
+        }
+    }
+
     VerticalBox {
         // Тулбар
         HorizontalBox {
