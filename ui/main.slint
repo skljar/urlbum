@@ -110,6 +110,11 @@ export component AppWindow inherits Window {
     callback favicon-done();                // вызывается из invoke_from_event_loop по завершении
     callback import-ua-dat();               // импорт из ua.dat
     callback import-done();                 // вызывается из invoke_from_event_loop по завершении
+    callback quit-app();
+    callback copy-url();
+    callback expand-all();
+    callback collapse-all();
+    callback backup-db();
 
     // --- Прогресс импорта ---
     in-out property <bool>   import-in-progress: false;
@@ -156,9 +161,13 @@ export component AppWindow inherits Window {
             MenuItem { title: "Создать базу данных..."; enabled: false; }
             MenuItem { title: "Открыть базу данных..."; enabled: false; }
             MenuSeparator {}
+            MenuItem { title: "Резервная копия..."; activated => { root.backup-db(); } }
+            MenuSeparator {}
             MenuItem { title: "Свойства базы данных";   enabled: false; }
             MenuSeparator {}
             MenuItem { title: "Настройки...";           enabled: false; }
+            MenuSeparator {}
+            MenuItem { title: "Выход"; activated => { root.quit-app(); } }
         }
 
         // ── Ссылки ────────────────────────────────────────────────────────────
@@ -173,7 +182,7 @@ export component AppWindow inherits Window {
             MenuItem { title: "Открыть";                  activated => { root.ctx-open-browser(root.selected-id); } }
             MenuItem { title: "Открыть с помощью...";     enabled: false; }
             MenuSeparator {}
-            MenuItem { title: "Копировать URL";            enabled: false; }
+            MenuItem { title: "Копировать URL"; activated => { root.copy-url(); } }
             MenuItem { title: "Свойства";                 activated => { root.open-properties(root.selected-id); } }
         }
 
@@ -186,8 +195,8 @@ export component AppWindow inherits Window {
         // ── Вид ───────────────────────────────────────────────────────────────
         Menu {
             title: "Вид";
-            MenuItem { title: "Развернуть все папки"; enabled: false; }
-            MenuItem { title: "Свернуть все папки";   enabled: false; }
+            MenuItem { title: "Развернуть все папки"; activated => { root.expand-all(); } }
+            MenuItem { title: "Свернуть все папки";   activated => { root.collapse-all(); } }
             MenuSeparator {}
             MenuItem { title: "Светлая/Тёмная тема";  enabled: false; }
         }

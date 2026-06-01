@@ -169,6 +169,22 @@ pub fn set_favicon(conn: &Connection, id: i64, filename: &str) -> Result<()> {
     Ok(())
 }
 
+// VACUUM INTO — копирует текущую БД в новый файл (SQLite 3.27+)
+pub fn backup(conn: &Connection, dest_path: &str) -> Result<()> {
+    let escaped = dest_path.replace('\'', "''");
+    conn.execute_batch(&format!("VACUUM INTO '{escaped}'"))
+}
+
+pub fn get_all_folder_ids(conn: &Connection) -> Vec<i64> {
+    let mut stmt = match conn.prepare("SELECT id FROM nodes WHERE kind = 'folder'") {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map([], |r| r.get(0))
+        .map(|rows| rows.flatten().collect())
+        .unwrap_or_default()
+}
+
 pub fn delete_node(conn: &Connection, id: i64) -> Result<()> {
     // safe: id is i64, not user-supplied string
     conn.execute_batch(&format!(

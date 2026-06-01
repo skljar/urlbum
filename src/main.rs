@@ -143,6 +143,35 @@ fn show_statusbar(id: i64, db: &rusqlite::Connection, window: &AppWindow) {
     window.set_status_visible(true);
 }
 
+// ─── Открытие URL в браузере ─────────────────────────────────────────────────
+
+fn normalize_url(url: &str) -> String {
+    if url.is_empty() { return url.to_string(); }
+    if url.contains("://") || url.starts_with("mailto:") || url.starts_with("file:") {
+        url.to_string()
+    } else {
+        format!("https://{url}")
+    }
+}
+
+// Показать карточку + открыть в браузере + touch_visited.
+// Вызывается из on_tree_item_activated и on_list_item_activated (bookmark branch).
+fn activate_bookmark(id: i64, db: &rusqlite::Connection, w: &AppWindow) {
+    if let Ok(node) = db::get_node(db, id) {
+        let url = normalize_url(node.url.as_deref().unwrap_or_default());
+        w.set_card_id(id as i32);
+        w.set_card_title(node.title.into());
+        w.set_card_url(url.clone().into());
+        if !url.is_empty() {
+            let _ = webbrowser::open(&url);
+            let _ = db::touch_visited(db, id);
+        }
+    }
+    w.set_selected_id(id as i32);
+    w.set_show_card(true);
+    w.set_status_visible(false);
+}
+
 // ─── main ────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -254,14 +283,7 @@ fn main() {
         } else {
             s.selected_id        = Some(id64);
             s.selected_is_folder = false;
-            if let Ok(node) = db::get_node(&s.db, id64) {
-                w.set_card_id(id);
-                w.set_card_title(node.title.into());
-                w.set_card_url(node.url.unwrap_or_default().into());
-            }
-            w.set_selected_id(id);
-            w.set_show_card(true);
-            w.set_status_visible(false);
+            activate_bookmark(id64, &s.db, &w);
         }
     });
 
@@ -305,19 +327,7 @@ fn main() {
         } else {
             s.selected_id        = Some(id64);
             s.selected_is_folder = false;
-            if let Ok(node) = db::get_node(&s.db, id64) {
-                let url = node.url.unwrap_or_default();
-                w.set_card_id(id);
-                w.set_card_title(node.title.into());
-                w.set_card_url(url.clone().into());
-                if !url.is_empty() {
-                    let _ = webbrowser::open(&url);
-                    let _ = db::touch_visited(&s.db, id64);
-                }
-            }
-            w.set_selected_id(id);
-            w.set_show_card(true);
-            w.set_status_visible(false);
+            activate_bookmark(id64, &s.db, &w);
         }
     });
 
@@ -392,7 +402,7 @@ fn main() {
         let id64 = id as i64;
         let s = sc.borrow();
         if let Ok(node) = db::get_node(&s.db, id64) {
-            let url = node.url.unwrap_or_default();
+            let url = normalize_url(node.url.as_deref().unwrap_or_default());
             if !url.is_empty() {
                 let _ = webbrowser::open(&url);
                 let _ = db::touch_visited(&s.db, id64);
@@ -644,6 +654,59 @@ fn main() {
                 }
             }).ok();
         });
+    });
+
+    // ── Выход ────────────────────────────────────────────────────────────────
+    window.on_quit_app(|| { let _ = slint::quit_event_loop(); });
+
+    // ── Развернуть все папки ──────────────────────────────────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_expand_all(move || {
+        let mut s = sc.borrow_mut();
+        for id in db::get_all_folder_ids(&s.db) {
+            s.expanded.insert(id);
+        }
+        let w = ww.upgrade().unwrap();
+        refresh_tree(&s, &w);
+    });
+
+    // ── Свернуть все папки ────────────────────────────────────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_collapse_all(move || {
+        let mut s = sc.borrow_mut();
+        s.expanded.clear();
+        let w = ww.upgrade().unwrap();
+        refresh_tree(&s, &w);
+    });
+
+    // ── Резервная копия ───────────────────────────────────────────────────────
+    let sc = Rc::clone(&state);
+    window.on_backup_db(move || {
+        let path = rfd::FileDialog::new()
+            .set_title("Резервная копия базы данных")
+            .add_filter("SQLite Database", &["db"])
+            .add_filter("All Files", &["*"])
+            .set_file_name("album_backup.db")
+            .save_file();
+        if let Some(path) = path {
+            let s = sc.borrow();
+            let _ = db::backup(&s.db, path.to_str().unwrap_or_default());
+        }
+    });
+
+    // ── Копировать URL ────────────────────────────────────────────────────────
+    let sc = Rc::clone(&state);
+    window.on_copy_url(move || {
+        let s = sc.borrow();
+        let Some(id) = s.selected_id else { return };
+        if s.selected_is_folder { return; }
+        if let Ok(node) = db::get_node(&s.db, id) {
+            if let Some(url) = node.url {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    let _ = cb.set_text(url);
+                }
+            }
+        }
     });
 
     // ── Отменить диалог ───────────────────────────────────────────────────────
