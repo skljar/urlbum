@@ -1,22 +1,48 @@
 slint::include_modules!();
 
 mod db;
+mod favicon;
 mod import;
 
 extern crate webbrowser;
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashSet, HashMap};
+use std::mem;
+use std::path::PathBuf;
 use std::rc::Rc;
-use slint::VecModel;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use slint::{Image, VecModel};
 
 struct State {
-    db: rusqlite::Connection,
-    selected_id:        Option<i64>,   // подсвечен в дереве
+    db:                 rusqlite::Connection,
+    data_dir:           PathBuf,             // exe_dir; favicons go in data_dir/favicons/
+    selected_id:        Option<i64>,
     selected_is_folder: bool,
-    current_folder:     Option<i64>,   // папка, чьё содержимое в правом списке
-    status_id:          Option<i64>,   // строка, выделенная в списке (статусбар)
+    current_folder:     Option<i64>,
+    status_id:          Option<i64>,
     expanded:           HashSet<i64>,
+}
+
+impl State {
+    fn favicons_dir(&self) -> PathBuf {
+        self.data_dir.join("favicons")
+    }
+}
+
+// ─── Favicon helper ──────────────────────────────────────────────────────────
+
+fn load_favicon(id: i64, favicons: &HashMap<i64, String>, dir: &std::path::Path) -> (Image, bool) {
+    if let Some(fname) = favicons.get(&id) {
+        if !fname.is_empty() {
+            let p = dir.join(fname);
+            if let Ok(img) = Image::load_from_path(&p) {
+                return (img, true);
+            }
+        }
+    }
+    (Image::default(), false)
 }
 
 // ─── Обновление левого дерева ────────────────────────────────────────────────
@@ -26,22 +52,31 @@ fn build_tree_list(
     parent: Option<i64>,
     depth: i32,
     expanded: &HashSet<i64>,
+    favicons: &HashMap<i64, String>,
+    favicons_dir: &std::path::Path,
     out: &mut Vec<TreeItem>,
 ) {
     let Ok(nodes) = db::get_children(conn, parent) else { return };
     for node in nodes {
         let is_folder = node.kind == "folder";
         let is_exp = is_folder && expanded.contains(&node.id);
+        let (fav, has_fav) = if !is_folder {
+            load_favicon(node.id, favicons, favicons_dir)
+        } else {
+            (Image::default(), false)
+        };
         out.push(TreeItem {
-            id:        node.id as i32,
-            title:     node.title.clone().into(),
+            id:          node.id as i32,
+            title:       node.title.clone().into(),
             depth,
-            expanded:  is_exp,
+            expanded:    is_exp,
             is_folder,
-            url:       node.url.clone().unwrap_or_default().into(),
+            url:         node.url.clone().unwrap_or_default().into(),
+            favicon:     fav,
+            has_favicon: has_fav,
         });
         if is_exp {
-            build_tree_list(conn, Some(node.id), depth + 1, expanded, out);
+            build_tree_list(conn, Some(node.id), depth + 1, expanded, favicons, favicons_dir, out);
         }
     }
 }
@@ -54,8 +89,10 @@ fn refresh_status(db: &rusqlite::Connection, window: &AppWindow) {
 }
 
 fn refresh_tree(state: &State, window: &AppWindow) {
+    let favicons = db::get_favicons(&state.db);
+    let favicons_dir = state.favicons_dir();
     let mut items: Vec<TreeItem> = Vec::new();
-    build_tree_list(&state.db, None, 0, &state.expanded, &mut items);
+    build_tree_list(&state.db, None, 0, &state.expanded, &favicons, &favicons_dir, &mut items);
     window.set_tree_model(Rc::new(VecModel::from(items)).into());
     refresh_status(&state.db, window);
 }
@@ -63,18 +100,30 @@ fn refresh_tree(state: &State, window: &AppWindow) {
 // ─── Обновление правого списка ───────────────────────────────────────────────
 
 fn refresh_contents(state: &State, window: &AppWindow) {
+    let favicons = db::get_favicons(&state.db);
+    let favicons_dir = state.favicons_dir();
     let items: Vec<TreeItem> = match state.current_folder {
         None => vec![],
         Some(folder_id) => db::get_children(&state.db, Some(folder_id))
             .unwrap_or_default()
             .into_iter()
-            .map(|n| TreeItem {
-                id:        n.id as i32,
-                title:     n.title.clone().into(),
-                depth:     0,
-                expanded:  false,
-                is_folder: n.kind == "folder",
-                url:       n.url.clone().unwrap_or_default().into(),
+            .map(|n| {
+                let is_folder = n.kind == "folder";
+                let (fav, has_fav) = if !is_folder {
+                    load_favicon(n.id, &favicons, &favicons_dir)
+                } else {
+                    (Image::default(), false)
+                };
+                TreeItem {
+                    id:          n.id as i32,
+                    title:       n.title.clone().into(),
+                    depth:       0,
+                    expanded:    false,
+                    is_folder,
+                    url:         n.url.clone().unwrap_or_default().into(),
+                    favicon:     fav,
+                    has_favicon: has_fav,
+                }
             })
             .collect(),
     };
@@ -105,7 +154,8 @@ fn main() {
     let db_path = exe_dir.join("album.db");
 
     let state = Rc::new(RefCell::new(State {
-        db: db::open(db_path.to_str().unwrap()).expect("cannot open album.db"),
+        db:                 db::open(db_path.to_str().unwrap()).expect("cannot open album.db"),
+        data_dir:           exe_dir.clone(),
         selected_id:        None,
         selected_is_folder: true,
         current_folder:     None,
@@ -134,7 +184,6 @@ fn main() {
         let w = ww.upgrade().unwrap();
 
         if is_folder {
-            // Папка: toggle expand + navigate + сбросить статусбар
             if s.expanded.contains(&id64) {
                 s.expanded.remove(&id64);
             } else {
@@ -151,7 +200,6 @@ fn main() {
             refresh_tree(&s, &w);
             refresh_contents(&s, &w);
         } else {
-            // Ссылка: показать карточку справа + подсветить в дереве
             s.selected_id        = Some(id64);
             s.selected_is_folder = false;
             if let Ok(node) = db::get_node(&s.db, id64) {
@@ -173,14 +221,12 @@ fn main() {
         let w = ww.upgrade().unwrap();
 
         if is_folder {
-            // Папка: только подсветить строку, НЕ навигировать, НЕ менять current_folder
             s.status_id = Some(id64);
-            w.set_status_id(id);          // реактивная подсветка через Slint
-            w.set_status_visible(false);  // статусбар для папок не показываем
+            w.set_status_id(id);
+            w.set_status_visible(false);
         } else {
-            // Ссылка: highlight + статусбар, БЕЗ refresh_contents
             s.status_id = Some(id64);
-            show_statusbar(id64, &s.db, &w);  // set_status_id реактивно подсвечивает строку
+            show_statusbar(id64, &s.db, &w);
         }
     });
 
@@ -192,7 +238,6 @@ fn main() {
         let w = ww.upgrade().unwrap();
 
         if is_folder {
-            // Папка: navigate (то же что одиночный клик)
             if !s.expanded.contains(&id64) {
                 s.expanded.insert(id64);
             }
@@ -207,7 +252,6 @@ fn main() {
             refresh_tree(&s, &w);
             refresh_contents(&s, &w);
         } else {
-            // Ссылка: карточка
             s.selected_id        = Some(id64);
             s.selected_is_folder = false;
             if let Ok(node) = db::get_node(&s.db, id64) {
@@ -218,7 +262,6 @@ fn main() {
             w.set_selected_id(id);
             w.set_show_card(true);
             w.set_status_visible(false);
-            // set_selected_id реактивно обновит подсветку в дереве — refresh не нужен
         }
     });
 
@@ -233,7 +276,7 @@ fn main() {
             s.expanded.insert(id64);
         }
         let w = ww.upgrade().unwrap();
-        refresh_tree(&s, &w);   // только дерево — current_folder и выделение не трогаем
+        refresh_tree(&s, &w);
     });
 
     // ── Двойной клик по названию в дереве ────────────────────────────────────
@@ -244,7 +287,6 @@ fn main() {
         let w = ww.upgrade().unwrap();
 
         if is_folder {
-            // Папка: toggle expand + select + navigate
             if s.expanded.contains(&id64) {
                 s.expanded.remove(&id64);
             } else {
@@ -261,7 +303,6 @@ fn main() {
             refresh_tree(&s, &w);
             refresh_contents(&s, &w);
         } else {
-            // Ссылка: карточка + открыть в браузере + touch_visited
             s.selected_id        = Some(id64);
             s.selected_is_folder = false;
             if let Ok(node) = db::get_node(&s.db, id64) {
@@ -280,7 +321,7 @@ fn main() {
         }
     });
 
-    // ── Новая папка — открыть диалог создания ────────────────────────────────
+    // ── Новая папка ───────────────────────────────────────────────────────────
     let ww = window.as_weak();
     window.on_new_folder(move || {
         let w = ww.upgrade().unwrap();
@@ -293,7 +334,7 @@ fn main() {
         w.set_prop_visible(true);
     });
 
-    // ── Новая ссылка — открыть диалог создания ───────────────────────────────
+    // ── Новая ссылка ──────────────────────────────────────────────────────────
     let ww = window.as_weak();
     window.on_new_bookmark(move || {
         let w = ww.upgrade().unwrap();
@@ -329,7 +370,6 @@ fn main() {
     });
 
     // ── Контекстное меню: ПКМ ────────────────────────────────────────────────
-    // ctx-x/ctx-y уже выставлены из Slint до вызова callback
     let (sc, ww) = (Rc::clone(&state), window.as_weak());
     window.on_ctx_request(move |id, is_folder| {
         let id64 = id as i64;
@@ -392,7 +432,6 @@ fn main() {
         let mut s = sc.borrow_mut();
 
         if is_new {
-            // Режим создания: INSERT нового узла
             let kind   = if is_folder { "folder" } else { "bookmark" };
             let parent = s.current_folder;
             if let Ok(new_id) = db::insert_node(&s.db, parent, kind, title.as_str(), url, note) {
@@ -401,7 +440,6 @@ fn main() {
                 s.selected_is_folder = is_folder;
             }
         } else {
-            // Режим редактирования: UPDATE существующего
             let id = w.get_prop_id() as i64;
             let _ = db::update_node(&s.db, id, title.as_str(), url, note);
         }
@@ -413,14 +451,141 @@ fn main() {
         refresh_contents(&s, &w);
     });
 
-    // ── Завершение импорта (вызывается из invoke_from_event_loop) ─────────────
+    // ── favicon-done: финальный refresh + очистка статуса ─────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_favicon_done(move || {
+        let s = sc.borrow();
+        let w = ww.upgrade().unwrap();
+        refresh_tree(&s, &w);
+        refresh_contents(&s, &w);
+        let ww2 = ww.clone();
+        slint::Timer::single_shot(std::time::Duration::from_secs(3), move || {
+            if let Some(w) = ww2.upgrade() {
+                w.set_import_status("".into());
+            }
+        });
+    });
+
+    // ── Загрузка favicon'ов для папки (ПКМ → Обновить favicon'ы) ─────────────
+    let db_path_for_fav_folder = db_path.to_str().unwrap().to_string();
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_ctx_load_favicons_folder(move |folder_id| {
+        let (bms, favicons_dir) = {
+            let s = sc.borrow();
+            let bms = db::get_bookmarks_recursive(&s.db, folder_id as i64).unwrap_or_default();
+            (bms, s.favicons_dir())
+        };
+        let deduped = favicon::dedup_by_domain(bms);
+        let total = deduped.len();
+        if total == 0 { return; }
+
+        if let Some(w) = ww.upgrade() {
+            w.set_import_status(format!("Favicon: 0 / {total}").into());
+        }
+
+        let queue        = Arc::new(Mutex::new(deduped));
+        let needs_rebuild = Arc::new(AtomicBool::new(false));
+        let done_count   = Arc::new(AtomicUsize::new(0));
+        let active       = Arc::new(AtomicUsize::new(5));
+
+        for _ in 0..5 {
+            let queue         = queue.clone();
+            let needs_rebuild = needs_rebuild.clone();
+            let done_count    = done_count.clone();
+            let active        = active.clone();
+            let db            = db_path_for_fav_folder.clone();
+            let favicons_dir  = favicons_dir.clone();
+            let ww2           = ww.clone();
+            let total2        = total;
+            std::thread::spawn(move || {
+                if let Ok(conn) = rusqlite::Connection::open(&db) {
+                    let _ = conn.execute_batch("PRAGMA busy_timeout = 5000");
+                    loop {
+                        let item = { queue.lock().unwrap().pop() };
+                        let Some((bm, same_ids)) = item else { break };
+                        if let Some(url) = bm.url.as_deref() {
+                            if let Some(fname) = favicon::fetch_favicon(url, &favicons_dir) {
+                                for id in &same_ids {
+                                    let _ = db::set_favicon(&conn, *id, &fname);
+                                }
+                                needs_rebuild.store(true, Ordering::Relaxed);
+                            }
+                        }
+                        done_count.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                // Последний воркер сигнализирует о завершении
+                if active.fetch_sub(1, Ordering::AcqRel) == 1 {
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(w) = ww2.upgrade() {
+                            w.set_import_status(
+                                format!("Favicon: {total2} / {total2}").into(),
+                            );
+                            w.invoke_favicon_done();
+                        }
+                    });
+                }
+            });
+        }
+
+        // Таймер на main thread: промежуточные rebuild каждые 200 мс
+        let needs_rebuild2 = needs_rebuild.clone();
+        let done2          = done_count.clone();
+        let sc2            = Rc::clone(&sc);
+        let ww2            = ww.clone();
+        let timer = slint::Timer::default();
+        timer.start(
+            slint::TimerMode::Repeated,
+            std::time::Duration::from_millis(200),
+            move || {
+                if needs_rebuild2.swap(false, Ordering::Relaxed) {
+                    if let Some(w) = ww2.upgrade() {
+                        let s = sc2.borrow();
+                        refresh_tree(&s, &w);
+                        refresh_contents(&s, &w);
+                        let n = done2.load(Ordering::Relaxed).min(total);
+                        w.set_import_status(format!("Favicon: {n} / {total}").into());
+                    }
+                }
+            },
+        );
+        mem::forget(timer); // таймер живёт до завершения (idle после done)
+    });
+
+    // ── Загрузка favicon одной ссылки (ПКМ → Загрузить favicon) ──────────────
+    let db_path_for_fav_bm = db_path.to_str().unwrap().to_string();
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_ctx_load_favicon_bm(move |id| {
+        let (url, favicons_dir) = {
+            let s = sc.borrow();
+            let url = db::get_node(&s.db, id as i64).ok().and_then(|n| n.url);
+            (url, s.favicons_dir())
+        };
+        let Some(url) = url else { return; };
+        let db  = db_path_for_fav_bm.clone();
+        let ww2 = ww.clone();
+        std::thread::spawn(move || {
+            if let Some(fname) = favicon::fetch_favicon(&url, &favicons_dir) {
+                if let Ok(conn) = rusqlite::Connection::open(&db) {
+                    let _ = conn.execute_batch("PRAGMA busy_timeout = 5000");
+                    let _ = db::set_favicon(&conn, id as i64, &fname);
+                }
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(w) = ww2.upgrade() {
+                        w.invoke_favicon_done();
+                    }
+                });
+            }
+        });
+    });
+
+    // ── Завершение импорта ────────────────────────────────────────────────────
     let (sc, ww) = (Rc::clone(&state), window.as_weak());
     window.on_import_done(move || {
         let s = sc.borrow();
         let w = ww.upgrade().unwrap();
         refresh_tree(&s, &w);
         refresh_contents(&s, &w);
-        // Через 5 сек очистить статус; single_shot делает mem::forget — Timer живёт до срабатывания
         let ww2 = ww.clone();
         slint::Timer::single_shot(std::time::Duration::from_secs(5), move || {
             if let Some(w) = ww2.upgrade() {
@@ -437,8 +602,8 @@ fn main() {
         w.set_import_in_progress(true);
         w.set_import_status("Импортирую...".into());
 
-        let db = db_path_for_import.clone();
-        let ww2 = ww.clone();
+        let db   = db_path_for_import.clone();
+        let ww2  = ww.clone();
         std::thread::spawn(move || {
             let conn = match rusqlite::Connection::open(&db) {
                 Ok(c) => c,

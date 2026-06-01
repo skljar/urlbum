@@ -116,6 +116,59 @@ pub fn touch_visited(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+pub fn get_bookmarks_recursive(conn: &Connection, folder_id: i64) -> Result<Vec<Node>> {
+    let mut stmt = conn.prepare(
+        "WITH RECURSIVE subtree(id) AS (
+             SELECT id FROM nodes WHERE parent = ?1
+             UNION ALL
+             SELECT n.id FROM nodes n JOIN subtree s ON n.parent = s.id
+         )
+         SELECT id, parent, kind, title, url, note, sort_idx
+         FROM nodes
+         WHERE id IN (SELECT id FROM subtree) AND kind = 'bookmark'",
+    )?;
+    let nodes = stmt
+        .query_map([folder_id], |row| {
+            Ok(Node {
+                id:       row.get(0)?,
+                parent:   row.get(1)?,
+                kind:     row.get(2)?,
+                title:    row.get(3)?,
+                url:      row.get(4)?,
+                note:     row.get(5)?,
+                sort_idx: row.get(6)?,
+                created:  None,
+                visited:  None,
+            })
+        })?
+        .collect::<Result<Vec<_>>>()?;
+    Ok(nodes)
+}
+
+pub fn get_favicons(conn: &Connection) -> std::collections::HashMap<i64, String> {
+    let mut map = std::collections::HashMap::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, favicon FROM nodes WHERE kind='bookmark' AND favicon IS NOT NULL AND favicon != ''",
+    ) {
+        let _ = stmt
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map(|rows| {
+                for row in rows.flatten() {
+                    map.insert(row.0, row.1);
+                }
+            });
+    }
+    map
+}
+
+pub fn set_favicon(conn: &Connection, id: i64, filename: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE nodes SET favicon = ?1 WHERE id = ?2",
+        params![if filename.is_empty() { None::<&str> } else { Some(filename) }, id],
+    )?;
+    Ok(())
+}
+
 pub fn delete_node(conn: &Connection, id: i64) -> Result<()> {
     // safe: id is i64, not user-supplied string
     conn.execute_batch(&format!(
@@ -245,5 +298,53 @@ mod tests {
         assert_eq!(node.title, "New Title");
         assert_eq!(node.url.as_deref(), Some("https://new.com"));
         assert_eq!(node.note.as_deref(), Some("my note"));
+    }
+
+    #[test]
+    fn get_bookmarks_recursive_finds_all_depths() {
+        let conn = test_db();
+        let root   = insert_node(&conn, None,        "folder",   "Root",   None,                          None).unwrap();
+        let sub    = insert_node(&conn, Some(root),  "folder",   "Sub",    None,                          None).unwrap();
+        let bm1    = insert_node(&conn, Some(root),  "bookmark", "BM1",    Some("https://a.com"), None).unwrap();
+        let bm2    = insert_node(&conn, Some(sub),   "bookmark", "BM2",    Some("https://b.com"), None).unwrap();
+        let _deep  = insert_node(&conn, Some(sub),   "folder",   "Deep",   None,                          None).unwrap();
+        let deep2  = insert_node(&conn, Some(_deep), "bookmark", "BM3",    Some("https://c.com"), None).unwrap();
+
+        let bms = get_bookmarks_recursive(&conn, root).unwrap();
+        let ids: Vec<i64> = bms.iter().map(|n| n.id).collect();
+        assert!(ids.contains(&bm1), "direct child bookmark");
+        assert!(ids.contains(&bm2), "bookmark in sub-folder");
+        assert!(ids.contains(&deep2), "bookmark at depth 3");
+        assert_eq!(bms.len(), 3, "only bookmarks, no folders");
+    }
+
+    #[test]
+    fn set_favicon_and_get_favicons_roundtrip() {
+        let conn = test_db();
+        let id1 = insert_node(&conn, None, "bookmark", "A", Some("https://a.com"), None).unwrap();
+        let id2 = insert_node(&conn, None, "bookmark", "B", Some("https://b.com"), None).unwrap();
+        insert_node(&conn, None, "folder", "F", None, None).unwrap(); // folder — should NOT appear
+
+        set_favicon(&conn, id1, "a.com.png").unwrap();
+        set_favicon(&conn, id2, "b.com.png").unwrap();
+
+        let map = get_favicons(&conn);
+        assert_eq!(map.get(&id1).map(|s| s.as_str()), Some("a.com.png"));
+        assert_eq!(map.get(&id2).map(|s| s.as_str()), Some("b.com.png"));
+        assert_eq!(map.len(), 2, "no folder entries");
+    }
+
+    #[test]
+    fn get_favicons_excludes_empty_and_null() {
+        let conn = test_db();
+        let id1 = insert_node(&conn, None, "bookmark", "A", Some("https://a.com"), None).unwrap();
+        let id2 = insert_node(&conn, None, "bookmark", "B", Some("https://b.com"), None).unwrap();
+        set_favicon(&conn, id1, "a.com.png").unwrap();
+        // id2 has NULL favicon — should NOT appear in map
+
+        let map = get_favicons(&conn);
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key(&id1));
+        assert!(!map.contains_key(&id2));
     }
 }
