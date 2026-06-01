@@ -169,6 +169,12 @@ pub fn set_favicon(conn: &Connection, id: i64, filename: &str) -> Result<()> {
     Ok(())
 }
 
+pub fn count_nodes(conn: &Connection) -> (i64, i64) {
+    let folders   = conn.query_row("SELECT COUNT(*) FROM nodes WHERE kind='folder'",   [], |r| r.get(0)).unwrap_or(0);
+    let bookmarks = conn.query_row("SELECT COUNT(*) FROM nodes WHERE kind='bookmark'", [], |r| r.get(0)).unwrap_or(0);
+    (folders, bookmarks)
+}
+
 // VACUUM INTO — копирует текущую БД в новый файл (SQLite 3.27+)
 pub fn backup(conn: &Connection, dest_path: &str) -> Result<()> {
     let escaped = dest_path.replace('\'', "''");

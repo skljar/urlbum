@@ -51,13 +51,18 @@ CREATE TABLE nodes (
 - `get_bookmarks_recursive(conn, folder_id)` — WITH RECURSIVE, только kind='bookmark'
 - `get_favicons(conn)` — `HashMap<i64, String>`, только строки с непустым favicon
 - `set_favicon(conn, id, filename)` — UPDATE nodes SET favicon=?1 WHERE id=?2
+- `get_all_folder_ids(conn)` — `Vec<i64>`, все папки (для expand-all)
+- `count_nodes(conn)` — `(i64, i64)` = (папок, ссылок), для диалога Свойства
+- `backup(conn, dest_path)` — VACUUM INTO (SQLite 3.27+)
 
 ## State (main.rs)
 
 ```rust
 struct State {
     db:                 rusqlite::Connection,
-    data_dir:           PathBuf,             // exe_dir; favicons → data_dir/favicons/
+    db_path:            String,              // путь к текущей БД; берётся воркерами перед spawn
+    data_dir:           PathBuf,             // директория БД; favicons → data_dir/favicons/
+    exe_dir:            PathBuf,             // директория exe; recent_dbs.json живёт здесь
     selected_id:        Option<i64>,
     selected_is_folder: bool,
     current_folder:     Option<i64>,
@@ -66,6 +71,13 @@ struct State {
 }
 // impl State { fn favicons_dir(&self) -> PathBuf { self.data_dir.join("favicons") } }
 ```
+
+**Хелперы смены базы:**
+- `reset_ui_state(&mut State, &AppWindow)` — очищает все поля выделения и expanded, вызывает refresh_tree + refresh_contents
+- `apply_recent_dbs(&Path, &AppWindow)` — читает recent_dbs.json, строит Vec<RecentDb>, устанавливает в Slint-модель
+- `load_recent_dbs(exe_dir)` / `push_recent_db(exe_dir, path)` — JSON read/write через serde_json, max 10 записей
+
+**Важно:** воркеры фавиконов и импорта берут `s.db_path.clone()` в начале callback (до spawn), а не захватывают путь при создании замыкания. Иначе после смены базы воркеры пишут в старый файл.
 
 ## Диалог свойств (props dialog) — два режима
 
@@ -108,7 +120,7 @@ struct State {
 | Одиночный клик на папку | только подсветить строку (status-id), без навигации |
 | Двойной клик на папку | navigate (current_folder=id) + expand + refresh обеих |
 | Одиночный клик на ссылку | подсветка строки + статусбар (URL/note/даты) |
-| Двойной клик на ссылку | карточка (show-card=true) |
+| Двойной клик на ссылку | карточка + открыть в браузере + touch_visited |
 
 ## Режимы правой панели
 
@@ -124,7 +136,7 @@ struct State {
 - ✅ Диалог свойств: создание (prop-is-new=true) и редактирование (false)
 - ✅ CRUD полный: создать папку/ссылку (через диалог), удалить (рекурсивно), изменить
 - ✅ Контекстное меню (ПКМ) в дереве и списке, позиция у курсора
-- ✅ Открытие ссылки в браузере (двойной клик в дереве, ПКМ → Открыть)
+- ✅ Открытие ссылки в браузере: двойной клик в дереве, двойной клик в правом списке, ПКМ → Открыть. Единый хелпер `activate_bookmark(&Connection, &AppWindow)`. URL без схемы → `normalize_url` добавляет `https://` (исключения: `mailto:`, `file:`)
 - ✅ touch_visited при открытии
 - ✅ album.db рядом с exe, данные сохраняются между запусками
 - ✅ Импорт ua.dat: кнопка "Import ua.dat" в тулбаре, `src/import.rs`; потоковый (`BufReader` + `read_until`), prepared statement, динамический `parent_stack`
@@ -132,21 +144,26 @@ struct State {
 - ✅ Автосброс статуса импорта через 5 сек (`Timer::single_shot` + `mem::forget` — живёт до срабатывания)
 - ✅ Иконки папок: PNG из url-album-2 (`assets/folder-closed.png`, `folder-open.png`), `image-rendering: pixelated`
 - ✅ Перетаскиваемый разделитель панелей (`tree-width` 120–600px, `mouse-cursor: col-resize`); панели без рамок
-- ✅ Нативный MenuBar: Файл (Импорт — подменю) / Ссылки / Поиск / Вид; рабочие пункты активны, будущие — `enabled: false`; вложенные Menu поддерживаются Slint 1.16
-- ✅ Правая панель: колонки "Название | Адрес" с заголовками и перетаскиваемым разделителем (`col-name-width`, clamp 80px … right-panel.width−100px); статусбар окна "Записей: N | База: album.db"
-- ✅ Иконки тулбара: SVG из url-album-2 (`assets/new-folder.svg`, `new-link.svg`, `delete.svg`, `import.svg`), `stroke="#444444"` (currentColor→фикс для resvg)
-- ✅ Кнопки тулбара: компонент `TBtn` (hover #d8eaf8 + border, disabled #f0f0f0); tooltip под курсором (#ffffe1, рамка #999) — координаты из `absolute-position + mouse-x/y` в `changed has-hover`
-- ✅ Favicon: `src/favicon.rs` (4-step fallback: /favicon.ico → HTML link → DuckDuckGo → Google S2), `ureq` blocking, `image` crate → PNG, кэш `favicons/` рядом с album.db; ПКМ папки → рекурсивно все ссылки (5 воркеров + `slint::Timer` 200 мс → full rebuild обеих панелей), ПКМ ссылки → одна; иконки появляются по мере загрузки; нет favicon → `new-link.svg`
-- ✅ 25 тестов (`cargo test`): 8 DB + 4 import + 10 favicon (extract_domain, sanitize, is_valid_image, find_icon_links, dedup_by_domain) + 3 DB-favicon (recursive, set/get, null-exclusion)
+- ✅ Нативный MenuBar: Файл / Ссылки / Поиск / Вид; рабочие пункты активны
+- ✅ Правая панель: колонки "Название | Адрес" с заголовками и перетаскиваемым разделителем; статусбар окна "Записей: N | База: album.db"
+- ✅ Иконки тулбара SVG, компонент `TBtn` (hover + tooltip)
+- ✅ Favicon: 4-step fallback, 5 воркеров batch + single, `slint::Timer` 200 мс rebuild
+- ✅ 25 тестов (`cargo test`): DB + import + favicon
+- ✅ Меню: Выход (`quit_event_loop`), Копировать URL (`arboard`), Развернуть/Свернуть все папки (`db::get_all_folder_ids`), Резервная копия (`rfd` save + `VACUUM INTO`)
+- ✅ Группа "База данных": Открыть базу (`pick_file` → new Connection), Создать базу (удалить файл + `db::open`), Закрыть базу (`:memory:`), Последние базы (JSON `recent_dbs.json` рядом с exe, подменю `for db in recent-dbs`), Свойства базы (путь + размер + кол-во папок/ссылок)
+
+**Известный баг (не исправлен):** если начать загрузку favicon'ов для папки и сразу переключить базу, фоновые воркеры продолжат писать в СТАРУЮ базу (они захватывают `db_path_str` в момент старта, но потом база меняется). Нужна отмена воркеров при смене базы.
 
 ## Очередь фич (приоритет)
 
-1. **Открытие в браузере из списка** — двойной клик по ссылке в правой панели (сейчас только карточка)
-2. **Скриншоты** — Edge/Chrome Win10/11, `--headless=new` + `--user-data-dir`
-3. **Drag&drop, поиск** (Ctrl+F), sort_idx для порядка
-4. **Импорт браузерных закладок** — JSON/HTML
-5. **Диалог выбора файла для импорта** — сейчас путь захардкожен (`ua.dat`); нужен нативный file-picker или хотя бы поле ввода пути
-6. **Задвоение при повторном импорте** — повторное нажатие "Import ua.dat" добавляет данные поверх существующих; нужна проверка (очистка таблицы перед импортом или дедупликация)
+Следующие группы меню (от простого к сложному — см. plan в memory/project_state.md):
+
+1. **Поиск и обработка**: Найти (Ctrl+F) — `db::search` из ua-3; Найти дубликаты — `db::find_duplicates`; Проверить ссылки (фоновый `ureq` HEAD)
+2. **Импорт/экспорт**: HTML, Chrome/Firefox JSON, TXT — `db.rs` из ua-3 + `rfd` диалоги выбора файла
+3. **Задвоение при повторном импорте** — очистка таблицы перед импортом или дедупликация
+4. **Скриншоты** — Edge/Chrome Win10/11, `--headless=new` + `--user-data-dir`
+5. **Drag&drop, sort_idx** для ручного порядка
+6. **Тёмная тема / тулбар-toggle** (Slint CSS-переменные)
 
 ## Меню — план (по образцу url-album-3)
 
@@ -157,68 +174,68 @@ MenuBar реализован (2026-06-01): меню Файл / Ссылки / П
 ### Файл
 | Пункт | Шорткат | Статус |
 |---|---|---|
-| Импорт ► (подменю) | | ✅ (ua.dat активен; браузер/HTML/TXT/экспорт — disabled) |
+| Импорт ► (подменю) | | ✅ ua.dat активен; остальное disabled |
 | — | | |
-| Создать базу данных... | | |
-| Открыть базу данных... | | |
-| Последние базы... | | |
-| Закрыть базу | | |
+| Создать базу данных... | | ✅ rfd save-диалог, удаляет файл перед db::open |
+| Открыть базу данных... | | ✅ rfd pick_file, пересоздаёт State.db |
+| Последние базы ► | | ✅ recent_dbs.json, подменю for в Slint |
+| Закрыть базу | | ✅ переключает на :memory: |
 | — | | |
-| Резервная копия... | | |
+| Резервная копия... | | ✅ rfd save + VACUUM INTO |
 | — | | |
-| Свойства базы данных | | |
+| Свойства базы данных | | ✅ диалог: путь, размер, папок/ссылок |
 | — | | |
-| Настройки... | | |
+| Настройки... | | disabled |
 | — | | |
-| Выход | Alt+F4 | |
+| Выход | Alt+F4 | ✅ quit_event_loop |
 
 ### Ссылки
 | Пункт | Шорткат | Статус |
 |---|---|---|
-| Новая папка | | ✅ (меню + тулбар + ПКМ) |
-| Новая ссылка | Ctrl+N | ✅ (меню + тулбар + ПКМ) |
-| Переименовать | F2 | ✅ (через Свойства) |
-| Удалить | Del | ✅ (меню + ПКМ) |
+| Новая папка | | ✅ меню + тулбар + ПКМ |
+| Новая ссылка | Ctrl+N | ✅ меню + тулбар + ПКМ |
+| Переименовать | F2 | ✅ через Свойства |
+| Удалить | Del | ✅ меню + ПКМ |
 | — | | |
-| Открыть | Enter | ✅ (меню + двойной клик в дереве + ПКМ) |
-| Открыть с помощью... | | |
+| Открыть | Enter | ✅ меню + двойной клик дерево/список + ПКМ |
+| Открыть с помощью... | | disabled |
 | — | | |
 | Проверить ссылки | | |
 | Найти дубликаты | | |
 | — | | |
-| Обновить favicon'ы | | ✅ (ПКМ папки → рекурсивно) |
+| Обновить favicon'ы | | ✅ ПКМ папки → рекурсивно |
 | — | | |
-| Копировать URL | Ctrl+C | |
-| Свойства | F4 | ✅ (меню + ПКМ) |
+| Копировать URL | Ctrl+C | ✅ arboard |
+| Свойства | F4 | ✅ меню + ПКМ |
 
 ### Перенос
 | Пункт | Статус |
 |---|---|
-| Импорт из браузера... | |
-| Импорт из HTML... | |
-| Импорт из TXT... | |
-| Импорт из ua.dat... | ✅ (меню Файл→Импорт + кнопка тулбара, фоновый поток) |
+| Импорт из браузера... | disabled |
+| Импорт из HTML... | disabled |
+| Импорт из TXT... | disabled |
+| Импорт из ua.dat... | ✅ меню Файл→Импорт + кнопка тулбара, фоновый поток |
 | — | |
-| Экспорт в HTML... | |
-| Экспорт в TXT... | |
+| Экспорт в HTML... | disabled |
+| Экспорт в TXT... | disabled |
 
 ### Поиск
 | Пункт | Шорткат | Статус |
 |---|---|---|
-| Найти... | Ctrl+F | |
+| Найти... | Ctrl+F | disabled |
 
 ### Вид
 | Пункт | Статус |
 |---|---|
-| Развернуть все папки | |
-| Свернуть все папки | |
+| Развернуть все папки | ✅ get_all_folder_ids → expanded |
+| Свернуть все папки | ✅ expanded.clear() |
 | — | |
-| Все ссылки | |
+| Все ссылки | disabled |
 | — | |
-| Скрыть/Показать тулбар | |
-| Светлая/Тёмная тема | |
+| Скрыть/Показать тулбар | disabled |
+| Светлая/Тёмная тема | disabled |
 | — | |
-| Настроить toolbar... | |
+| Настроить toolbar... | disabled |
 
 ## Favicon — архитектура
 
@@ -323,3 +340,10 @@ loop {
 - Favicon воркеры открывают свой `rusqlite::Connection` (не State.db) — то же что импорт
 - `slint::Timer` в favicon-batch: `mem::forget(timer)` — таймер живёт, idle после завершения (дёшево)
 - `slint::Image::load_from_path(&path)` — загрузка PNG в `Image` для `TreeItem.favicon`
+- `normalize_url(url)` — добавляет `https://` если нет `://` и не начинается с `mailto:` / `file:`
+- `activate_bookmark(id, &Connection, &AppWindow)` — единый хелпер: нормализует URL, ставит карточку, открывает браузер, touch_visited. Используется из `on_tree_item_activated`, `on_list_item_activated`, `on_ctx_open_browser` (последний без карточки)
+- rfd 0.15: метод `pick_file()` (НЕ `open_file()`), `save_file()` — без изменений
+- Смена State.db: внутри одного `borrow_mut`, без вложенных захватов. `s.db = new_conn` дропает старое соединение
+- `recent_dbs.json` рядом с exe (s.exe_dir), не рядом с db (s.data_dir)
+- Слint dynamic menu: `for db in root.recent-dbs: MenuItem { ... }` работает в Slint 1.16
+- Crates: добавлены `arboard = "3"`, `rfd = "0.15"`, `serde_json = "1"`

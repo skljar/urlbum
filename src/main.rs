@@ -17,7 +17,9 @@ use slint::{Image, VecModel};
 
 struct State {
     db:                 rusqlite::Connection,
-    data_dir:           PathBuf,             // exe_dir; favicons go in data_dir/favicons/
+    db_path:            String,              // путь к текущей БД; для воркеров (не Send)
+    data_dir:           PathBuf,             // директория БД; favicons → data_dir/favicons/
+    exe_dir:            PathBuf,             // директория exe; recent_dbs.json живёт здесь
     selected_id:        Option<i64>,
     selected_is_folder: bool,
     current_folder:     Option<i64>,
@@ -143,6 +145,52 @@ fn show_statusbar(id: i64, db: &rusqlite::Connection, window: &AppWindow) {
     window.set_status_visible(true);
 }
 
+// ─── Recent databases helpers ────────────────────────────────────────────────
+
+fn load_recent_dbs(exe_dir: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(exe_dir.join("recent_dbs.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn push_recent_db(exe_dir: &std::path::Path, new_path: &str) -> Vec<String> {
+    let mut list = load_recent_dbs(exe_dir);
+    list.retain(|p| p != new_path);
+    list.insert(0, new_path.to_string());
+    list.truncate(10);
+    if let Ok(json) = serde_json::to_string(&list) {
+        let _ = std::fs::write(exe_dir.join("recent_dbs.json"), json);
+    }
+    list
+}
+
+// ─── UI reset при смене базы ─────────────────────────────────────────────────
+
+fn apply_recent_dbs(exe_dir: &std::path::Path, w: &AppWindow) {
+    let list = load_recent_dbs(exe_dir);
+    let items: Vec<RecentDb> = list.iter().map(|p| {
+        let title = std::path::Path::new(p)
+            .file_name().and_then(|n| n.to_str()).unwrap_or(p).into();
+        RecentDb { title, path: p.as_str().into() }
+    }).collect();
+    w.set_recent_dbs(Rc::new(VecModel::from(items)).into());
+}
+
+fn reset_ui_state(s: &mut State, w: &AppWindow) {
+    s.selected_id        = None;
+    s.selected_is_folder = true;
+    s.current_folder     = None;
+    s.status_id          = None;
+    s.expanded.clear();
+    w.set_selected_id(-1);
+    w.set_status_id(-1);
+    w.set_status_visible(false);
+    w.set_show_card(false);
+    refresh_tree(s, w);
+    refresh_contents(s, w);
+}
+
 // ─── Открытие URL в браузере ─────────────────────────────────────────────────
 
 fn normalize_url(url: &str) -> String {
@@ -184,7 +232,9 @@ fn main() {
 
     let state = Rc::new(RefCell::new(State {
         db:                 db::open(db_path.to_str().unwrap()).expect("cannot open album.db"),
+        db_path:            db_path.to_str().unwrap().to_string(),
         data_dir:           exe_dir.clone(),
+        exe_dir:            exe_dir.clone(),
         selected_id:        None,
         selected_is_folder: true,
         current_folder:     None,
@@ -203,6 +253,7 @@ fn main() {
         let s = state.borrow();
         refresh_tree(&s, &window);
         refresh_contents(&s, &window);
+        apply_recent_dbs(&s.exe_dir, &window);
     }
 
     // ── Клик по узлу в левом дереве ──────────────────────────────────────────
@@ -477,13 +528,12 @@ fn main() {
     });
 
     // ── Загрузка favicon'ов для папки (ПКМ → Обновить favicon'ы) ─────────────
-    let db_path_for_fav_folder = db_path.to_str().unwrap().to_string();
     let (sc, ww) = (Rc::clone(&state), window.as_weak());
     window.on_ctx_load_favicons_folder(move |folder_id| {
-        let (bms, favicons_dir) = {
+        let (bms, favicons_dir, db_path_str) = {
             let s = sc.borrow();
             let bms = db::get_bookmarks_recursive(&s.db, folder_id as i64).unwrap_or_default();
-            (bms, s.favicons_dir())
+            (bms, s.favicons_dir(), s.db_path.clone())
         };
         let deduped = favicon::dedup_by_domain(bms);
         let total = deduped.len();
@@ -503,7 +553,7 @@ fn main() {
             let needs_rebuild = needs_rebuild.clone();
             let done_count    = done_count.clone();
             let active        = active.clone();
-            let db            = db_path_for_fav_folder.clone();
+            let db            = db_path_str.clone();
             let favicons_dir  = favicons_dir.clone();
             let ww2           = ww.clone();
             let total2        = total;
@@ -563,16 +613,15 @@ fn main() {
     });
 
     // ── Загрузка favicon одной ссылки (ПКМ → Загрузить favicon) ──────────────
-    let db_path_for_fav_bm = db_path.to_str().unwrap().to_string();
     let (sc, ww) = (Rc::clone(&state), window.as_weak());
     window.on_ctx_load_favicon_bm(move |id| {
-        let (url, favicons_dir) = {
+        let (url, favicons_dir, db_path_str) = {
             let s = sc.borrow();
             let url = db::get_node(&s.db, id as i64).ok().and_then(|n| n.url);
-            (url, s.favicons_dir())
+            (url, s.favicons_dir(), s.db_path.clone())
         };
         let Some(url) = url else { return; };
-        let db  = db_path_for_fav_bm.clone();
+        let db  = db_path_str;
         let ww2 = ww.clone();
         std::thread::spawn(move || {
             if let Some(fname) = favicon::fetch_favicon(&url, &favicons_dir) {
@@ -605,14 +654,13 @@ fn main() {
     });
 
     // ── Импорт ua.dat — фоновый поток ─────────────────────────────────────────
-    let db_path_for_import = db_path.to_str().unwrap().to_string();
-    let ww = window.as_weak();
+    let (sc_imp, ww) = (Rc::clone(&state), window.as_weak());
     window.on_import_ua_dat(move || {
         let w = ww.upgrade().unwrap();
         w.set_import_in_progress(true);
         w.set_import_status("Импортирую...".into());
 
-        let db   = db_path_for_import.clone();
+        let db   = sc_imp.borrow().db_path.clone();
         let ww2  = ww.clone();
         std::thread::spawn(move || {
             let conn = match rusqlite::Connection::open(&db) {
@@ -654,6 +702,133 @@ fn main() {
                 }
             }).ok();
         });
+    });
+
+    // ── Открыть базу данных ───────────────────────────────────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_open_db(move || {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Открыть базу данных")
+            .add_filter("SQLite Database", &["db"])
+            .add_filter("All Files", &["*"])
+            .pick_file()
+        else { return };
+        let path_str = match path.to_str() { Some(s) => s.to_string(), None => return };
+        let Ok(new_conn) = db::open(&path_str) else { return };
+        let new_data_dir = path.parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let db_name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("album.db")
+            .to_string();
+
+        let mut s = sc.borrow_mut();
+        s.db       = new_conn;
+        s.db_path  = path_str.clone();
+        s.data_dir = new_data_dir;
+        let exe_dir = s.exe_dir.clone();
+        push_recent_db(&exe_dir, &path_str);
+
+        let w = ww.upgrade().unwrap();
+        w.set_db_name(db_name.into());
+        reset_ui_state(&mut s, &w);
+        apply_recent_dbs(&exe_dir, &w);
+    });
+
+    // ── Создать базу данных ───────────────────────────────────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_create_db(move || {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Создать новую базу данных")
+            .add_filter("SQLite Database", &["db"])
+            .set_file_name("album.db")
+            .save_file()
+        else { return };
+        let path_str = match path.to_str() { Some(s) => s.to_string(), None => return };
+        // Удалить существующий файл, чтобы создать пустую БД
+        if path.exists() { let _ = std::fs::remove_file(&path); }
+        let Ok(new_conn) = db::open(&path_str) else { return };
+        let new_data_dir = path.parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let db_name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("album.db")
+            .to_string();
+
+        let mut s = sc.borrow_mut();
+        s.db       = new_conn;
+        s.db_path  = path_str.clone();
+        s.data_dir = new_data_dir;
+        let exe_dir = s.exe_dir.clone();
+        push_recent_db(&exe_dir, &path_str);
+
+        let w = ww.upgrade().unwrap();
+        w.set_db_name(db_name.into());
+        reset_ui_state(&mut s, &w);
+        apply_recent_dbs(&exe_dir, &w);
+    });
+
+    // ── Закрыть базу ──────────────────────────────────────────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_close_db(move || {
+        let Ok(empty) = db::open(":memory:") else { return };
+        let mut s = sc.borrow_mut();
+        s.db      = empty;
+        s.db_path = ":memory:".into();
+        s.data_dir = s.exe_dir.clone();
+
+        let w = ww.upgrade().unwrap();
+        w.set_db_name("(нет базы)".into());
+        reset_ui_state(&mut s, &w);
+    });
+
+    // ── Последние базы: открыть по пути ──────────────────────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_open_recent(move |path_ss| {
+        let path_str = path_ss.to_string();
+        let path = std::path::Path::new(&path_str);
+        let Ok(new_conn) = db::open(&path_str) else { return };
+        let new_data_dir = path.parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| PathBuf::from("."));
+        let db_name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("album.db")
+            .to_string();
+
+        let mut s = sc.borrow_mut();
+        s.db       = new_conn;
+        s.db_path  = path_str.clone();
+        s.data_dir = new_data_dir;
+        let exe_dir = s.exe_dir.clone();
+        push_recent_db(&exe_dir, &path_str);
+
+        let w = ww.upgrade().unwrap();
+        w.set_db_name(db_name.into());
+        reset_ui_state(&mut s, &w);
+        apply_recent_dbs(&exe_dir, &w);
+    });
+
+    // ── Свойства базы данных ──────────────────────────────────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_show_db_props(move || {
+        let s = sc.borrow();
+        let w = ww.upgrade().unwrap();
+        let (folders, bookmarks) = db::count_nodes(&s.db);
+        let size_str = if s.db_path == ":memory:" {
+            "в памяти".to_string()
+        } else {
+            std::fs::metadata(&s.db_path)
+                .map(|m| format!("{} байт", m.len()))
+                .unwrap_or_else(|_| "—".to_string())
+        };
+        w.set_db_props_path(s.db_path.as_str().into());
+        w.set_db_props_size(size_str.into());
+        w.set_db_props_folders(folders as i32);
+        w.set_db_props_bookmarks(bookmarks as i32);
+        w.set_db_props_visible(true);
     });
 
     // ── Выход ────────────────────────────────────────────────────────────────

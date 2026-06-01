@@ -5145,6 +5145,7 @@ dependencies = [
  "image",
  "rfd",
  "rusqlite",
+ "serde_json",
  "slint",
  "slint-build",
  "ureq",

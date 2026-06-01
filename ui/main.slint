@@ -1,5 +1,7 @@
 import { Button, ListView, HorizontalBox, VerticalBox, LineEdit } from "std-widgets.slint";
 
+struct RecentDb { title: string, path: string }
+
 // Универсальный узел: используется и в левом дереве, и в правом списке
 struct TreeItem {
     id: int,
@@ -115,6 +117,17 @@ export component AppWindow inherits Window {
     callback expand-all();
     callback collapse-all();
     callback backup-db();
+    callback open-db();
+    callback create-db();
+    callback close-db();
+    callback open-recent(string);
+    in property <[RecentDb]> recent-dbs: [];
+    callback show-db-props();
+    in-out property <bool>   db-props-visible: false;
+    in-out property <string> db-props-path: "";
+    in-out property <string> db-props-size: "";
+    in-out property <int>    db-props-folders: 0;
+    in-out property <int>    db-props-bookmarks: 0;
 
     // --- Прогресс импорта ---
     in-out property <bool>   import-in-progress: false;
@@ -158,12 +171,20 @@ export component AppWindow inherits Window {
             }
 
             MenuSeparator {}
-            MenuItem { title: "Создать базу данных..."; enabled: false; }
-            MenuItem { title: "Открыть базу данных..."; enabled: false; }
+            MenuItem { title: "Создать базу данных..."; activated => { root.create-db(); } }
+            MenuItem { title: "Открыть базу данных..."; activated => { root.open-db(); } }
+            Menu {
+                title: "Последние базы";
+                for db in root.recent-dbs: MenuItem {
+                    title: db.title;
+                    activated => { root.open-recent(db.path); }
+                }
+            }
+            MenuItem { title: "Закрыть базу"; activated => { root.close-db(); } }
             MenuSeparator {}
             MenuItem { title: "Резервная копия..."; activated => { root.backup-db(); } }
             MenuSeparator {}
-            MenuItem { title: "Свойства базы данных";   enabled: false; }
+            MenuItem { title: "Свойства базы данных"; activated => { root.show-db-props(); } }
             MenuSeparator {}
             MenuItem { title: "Настройки...";           enabled: false; }
             MenuSeparator {}
@@ -655,6 +676,49 @@ export component AppWindow inherits Window {
                     spacing: 8px;
                     Button { text: "OK";     clicked => { root.save-properties();   } }
                     Button { text: "Cancel"; clicked => { root.cancel-properties(); } }
+                }
+            }
+        }
+    }
+
+    // ══ Диалог свойств базы данных ════════════════════════════════════════════
+    if root.db-props-visible: Rectangle {
+        x: 0; y: 0;
+        width: root.width;
+        height: root.height;
+        background: #00000055;
+        TouchArea { clicked => { root.db-props-visible = false; } }
+        Rectangle {
+            x: (root.width  - self.width)  / 2;
+            y: (root.height - self.height) / 2;
+            width: 440px;
+            height: 190px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            border-color: #aaaaaa;
+            border-width: 1px;
+            VerticalBox {
+                padding: 20px;
+                spacing: 8px;
+                Text { text: "Свойства базы данных"; font-size: 14px; font-weight: 700; }
+                HorizontalLayout { spacing: 8px;
+                    Text { text: "Путь:";      width: 80px; color: #555; vertical-alignment: center; }
+                    Text { text: root.db-props-path; overflow: elide; vertical-alignment: center; }
+                }
+                HorizontalLayout { spacing: 8px;
+                    Text { text: "Размер:";    width: 80px; color: #555; vertical-alignment: center; }
+                    Text { text: root.db-props-size; vertical-alignment: center; }
+                }
+                HorizontalLayout { spacing: 8px;
+                    Text { text: "Папок:";     width: 80px; color: #555; vertical-alignment: center; }
+                    Text { text: root.db-props-folders; vertical-alignment: center; }
+                }
+                HorizontalLayout { spacing: 8px;
+                    Text { text: "Ссылок:";    width: 80px; color: #555; vertical-alignment: center; }
+                    Text { text: root.db-props-bookmarks; vertical-alignment: center; }
+                }
+                HorizontalLayout { alignment: end;
+                    Button { text: "ОК"; clicked => { root.db-props-visible = false; } }
                 }
             }
         }
