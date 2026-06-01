@@ -25,6 +25,7 @@ struct State {
     current_folder:     Option<i64>,
     status_id:          Option<i64>,
     expanded:           HashSet<i64>,
+    favicon_cancel:     Arc<AtomicBool>,     // сброс при смене базы → воркеры прекращают запись
 }
 
 impl State {
@@ -240,6 +241,7 @@ fn main() {
         current_folder:     None,
         status_id:          None,
         expanded:           HashSet::new(),
+        favicon_cancel:     Arc::new(AtomicBool::new(false)),
     }));
 
     let window = AppWindow::new().unwrap();
@@ -530,10 +532,10 @@ fn main() {
     // ── Загрузка favicon'ов для папки (ПКМ → Обновить favicon'ы) ─────────────
     let (sc, ww) = (Rc::clone(&state), window.as_weak());
     window.on_ctx_load_favicons_folder(move |folder_id| {
-        let (bms, favicons_dir, db_path_str) = {
+        let (bms, favicons_dir, db_path_str, cancel) = {
             let s = sc.borrow();
             let bms = db::get_bookmarks_recursive(&s.db, folder_id as i64).unwrap_or_default();
-            (bms, s.favicons_dir(), s.db_path.clone())
+            (bms, s.favicons_dir(), s.db_path.clone(), s.favicon_cancel.clone())
         };
         let deduped = favicon::dedup_by_domain(bms);
         let total = deduped.len();
@@ -553,6 +555,7 @@ fn main() {
             let needs_rebuild = needs_rebuild.clone();
             let done_count    = done_count.clone();
             let active        = active.clone();
+            let cancel        = cancel.clone();
             let db            = db_path_str.clone();
             let favicons_dir  = favicons_dir.clone();
             let ww2           = ww.clone();
@@ -563,8 +566,10 @@ fn main() {
                     loop {
                         let item = { queue.lock().unwrap().pop() };
                         let Some((bm, same_ids)) = item else { break };
+                        if cancel.load(Ordering::Relaxed) { break; }
                         if let Some(url) = bm.url.as_deref() {
                             if let Some(fname) = favicon::fetch_favicon(url, &favicons_dir) {
+                                if cancel.load(Ordering::Relaxed) { break; }
                                 for id in &same_ids {
                                     let _ = db::set_favicon(&conn, *id, &fname);
                                 }
@@ -575,7 +580,7 @@ fn main() {
                     }
                 }
                 // Последний воркер сигнализирует о завершении
-                if active.fetch_sub(1, Ordering::AcqRel) == 1 {
+                if active.fetch_sub(1, Ordering::AcqRel) == 1 && !cancel.load(Ordering::Relaxed) {
                     let _ = slint::invoke_from_event_loop(move || {
                         if let Some(w) = ww2.upgrade() {
                             w.set_import_status(
@@ -615,25 +620,27 @@ fn main() {
     // ── Загрузка favicon одной ссылки (ПКМ → Загрузить favicon) ──────────────
     let (sc, ww) = (Rc::clone(&state), window.as_weak());
     window.on_ctx_load_favicon_bm(move |id| {
-        let (url, favicons_dir, db_path_str) = {
+        let (url, favicons_dir, db_path_str, cancel) = {
             let s = sc.borrow();
             let url = db::get_node(&s.db, id as i64).ok().and_then(|n| n.url);
-            (url, s.favicons_dir(), s.db_path.clone())
+            (url, s.favicons_dir(), s.db_path.clone(), s.favicon_cancel.clone())
         };
         let Some(url) = url else { return; };
         let db  = db_path_str;
         let ww2 = ww.clone();
         std::thread::spawn(move || {
             if let Some(fname) = favicon::fetch_favicon(&url, &favicons_dir) {
-                if let Ok(conn) = rusqlite::Connection::open(&db) {
-                    let _ = conn.execute_batch("PRAGMA busy_timeout = 5000");
-                    let _ = db::set_favicon(&conn, id as i64, &fname);
-                }
-                let _ = slint::invoke_from_event_loop(move || {
-                    if let Some(w) = ww2.upgrade() {
-                        w.invoke_favicon_done();
+                if !cancel.load(Ordering::Relaxed) {
+                    if let Ok(conn) = rusqlite::Connection::open(&db) {
+                        let _ = conn.execute_batch("PRAGMA busy_timeout = 5000");
+                        let _ = db::set_favicon(&conn, id as i64, &fname);
                     }
-                });
+                    let _ = slint::invoke_from_event_loop(move || {
+                        if let Some(w) = ww2.upgrade() {
+                            w.invoke_favicon_done();
+                        }
+                    });
+                }
             }
         });
     });
@@ -724,6 +731,8 @@ fn main() {
             .to_string();
 
         let mut s = sc.borrow_mut();
+        s.favicon_cancel.store(true, Ordering::Relaxed);
+        s.favicon_cancel = Arc::new(AtomicBool::new(false));
         s.db       = new_conn;
         s.db_path  = path_str.clone();
         s.data_dir = new_data_dir;
@@ -758,6 +767,8 @@ fn main() {
             .to_string();
 
         let mut s = sc.borrow_mut();
+        s.favicon_cancel.store(true, Ordering::Relaxed);
+        s.favicon_cancel = Arc::new(AtomicBool::new(false));
         s.db       = new_conn;
         s.db_path  = path_str.clone();
         s.data_dir = new_data_dir;
@@ -775,6 +786,8 @@ fn main() {
     window.on_close_db(move || {
         let Ok(empty) = db::open(":memory:") else { return };
         let mut s = sc.borrow_mut();
+        s.favicon_cancel.store(true, Ordering::Relaxed);
+        s.favicon_cancel = Arc::new(AtomicBool::new(false));
         s.db      = empty;
         s.db_path = ":memory:".into();
         s.data_dir = s.exe_dir.clone();
@@ -799,6 +812,8 @@ fn main() {
             .to_string();
 
         let mut s = sc.borrow_mut();
+        s.favicon_cancel.store(true, Ordering::Relaxed);
+        s.favicon_cancel = Arc::new(AtomicBool::new(false));
         s.db       = new_conn;
         s.db_path  = path_str.clone();
         s.data_dir = new_data_dir;
