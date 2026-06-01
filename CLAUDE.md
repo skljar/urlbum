@@ -18,6 +18,8 @@
 
 - `src/main.rs` — State (Rc<RefCell>), UI callbacks, refresh функции
 - `src/db.rs` — SQLite CRUD, единая таблица nodes
+- `src/favicon.rs` — fetch_favicon (4-step fallback), dedup_by_domain, pure helpers
+- `src/import.rs` — потоковый парсер ua.dat (Win-1251, parent_stack)
 - `ui/main.slint` — UI (тулбар, дерево слева, список/карточка/статусбар справа)
 - `build.rs` — slint_build::compile
 - `.cargo/config.toml` — target x64 + crt-static
@@ -46,18 +48,23 @@ CREATE TABLE nodes (
 - `insert_node` — принимает `note: Option<&str>` (сразу пишет в БД)
 - `delete_node` — рекурсивный CTE (удаляет узел + всех потомков)
 - `touch_visited` — `UPDATE SET visited=datetime('now')` при открытии в браузере
+- `get_bookmarks_recursive(conn, folder_id)` — WITH RECURSIVE, только kind='bookmark'
+- `get_favicons(conn)` — `HashMap<i64, String>`, только строки с непустым favicon
+- `set_favicon(conn, id, filename)` — UPDATE nodes SET favicon=?1 WHERE id=?2
 
 ## State (main.rs)
 
 ```rust
 struct State {
-    db:                rusqlite::Connection,
-    selected_id:       Option<i64>,   // подсвечен в дереве
+    db:                 rusqlite::Connection,
+    data_dir:           PathBuf,             // exe_dir; favicons → data_dir/favicons/
+    selected_id:        Option<i64>,
     selected_is_folder: bool,
-    current_folder:    Option<i64>,   // папка, чьё содержимое в правой панели
-    status_id:         Option<i64>,   // выделенная строка в списке (статусбар)
-    expanded:          HashSet<i64>,
+    current_folder:     Option<i64>,
+    status_id:          Option<i64>,
+    expanded:           HashSet<i64>,
 }
+// impl State { fn favicons_dir(&self) -> PathBuf { self.data_dir.join("favicons") } }
 ```
 
 ## Диалог свойств (props dialog) — два режима
@@ -81,8 +88,8 @@ struct State {
 
 | Тип узла | Пункты меню |
 |---|---|
-| Папка | Новая папка \| Новая ссылка \| — \| Свойства \| Удалить |
-| Ссылка | Открыть \| — \| Свойства \| Удалить |
+| Папка | Новая папка \| Новая ссылка \| — \| Обновить favicon'ы \| — \| Свойства \| Удалить |
+| Ссылка | Открыть \| — \| Загрузить favicon \| — \| Свойства \| Удалить |
 
 ## Модель кликов (финальная)
 
@@ -108,7 +115,7 @@ struct State {
 1. **Список** (`show-card=false`): содержимое current_folder (папки + ссылки). Внизу статусбар при выбранной ссылке.
 2. **Карточка** (`show-card=true`): заголовок крупно + URL + заглушка-превью. Свойства — через ПКМ.
 
-## Что готово (2026-05-31)
+## Что готово (2026-06-01)
 
 - ✅ Смешанное дерево папок и ссылок (depth-отступ, раздельные зоны клика: значок/название)
 - ✅ Список содержимого папки (папки + ссылки вместе, single/double click)
@@ -123,23 +130,23 @@ struct State {
 - ✅ Импорт ua.dat: кнопка "Import ua.dat" в тулбаре, `src/import.rs`; потоковый (`BufReader` + `read_until`), prepared statement, динамический `parent_stack`
 - ✅ Неблокирующий импорт: фоновый поток (`std::thread`) + `invoke_from_event_loop`, прогресс в тулбаре ("Импортировано N..."), кнопка блокируется на время импорта, `busy_timeout=5000` на обоих соединениях
 - ✅ Автосброс статуса импорта через 5 сек (`Timer::single_shot` + `mem::forget` — живёт до срабатывания)
-- ✅ 12 тестов (`cargo test`): 8 DB + 4 import (decode, date, url, real file)
 - ✅ Иконки папок: PNG из url-album-2 (`assets/folder-closed.png`, `folder-open.png`), `image-rendering: pixelated`
 - ✅ Перетаскиваемый разделитель панелей (`tree-width` 120–600px, `mouse-cursor: col-resize`); панели без рамок
 - ✅ Нативный MenuBar: Файл (Импорт — подменю) / Ссылки / Поиск / Вид; рабочие пункты активны, будущие — `enabled: false`; вложенные Menu поддерживаются Slint 1.16
 - ✅ Правая панель: колонки "Название | Адрес" с заголовками и перетаскиваемым разделителем (`col-name-width`, clamp 80px … right-panel.width−100px); статусбар окна "Записей: N | База: album.db"
 - ✅ Иконки тулбара: SVG из url-album-2 (`assets/new-folder.svg`, `new-link.svg`, `delete.svg`, `import.svg`), `stroke="#444444"` (currentColor→фикс для resvg)
 - ✅ Кнопки тулбара: компонент `TBtn` (hover #d8eaf8 + border, disabled #f0f0f0); tooltip под курсором (#ffffe1, рамка #999) — координаты из `absolute-position + mouse-x/y` в `changed has-hover`
+- ✅ Favicon: `src/favicon.rs` (4-step fallback: /favicon.ico → HTML link → DuckDuckGo → Google S2), `ureq` blocking, `image` crate → PNG, кэш `favicons/` рядом с album.db; ПКМ папки → рекурсивно все ссылки (5 воркеров + `slint::Timer` 200 мс → full rebuild обеих панелей), ПКМ ссылки → одна; иконки появляются по мере загрузки; нет favicon → `new-link.svg`
+- ✅ 25 тестов (`cargo test`): 8 DB + 4 import + 10 favicon (extract_domain, sanitize, is_valid_image, find_icon_links, dedup_by_domain) + 3 DB-favicon (recursive, set/get, null-exclusion)
 
 ## Очередь фич (приоритет)
 
-1. **Favicon** — логику взять из старого URL-Album-3 как справочника
-2. **Открытие в браузере из списка** — двойной клик по ссылке в правой панели (сейчас только карточка)
-3. **Скриншоты** — Edge/Chrome Win10/11, `--headless=new` + `--user-data-dir`
-4. **Drag&drop, поиск** (Ctrl+F), sort_idx для порядка
-5. **Импорт браузерных закладок** — JSON/HTML
-6. **Диалог выбора файла для импорта** — сейчас путь захардкожен (`ua.dat`); нужен нативный file-picker или хотя бы поле ввода пути
-7. **Задвоение при повторном импорте** — повторное нажатие "Import ua.dat" добавляет данные поверх существующих; нужна проверка (очистка таблицы перед импортом или дедупликация)
+1. **Открытие в браузере из списка** — двойной клик по ссылке в правой панели (сейчас только карточка)
+2. **Скриншоты** — Edge/Chrome Win10/11, `--headless=new` + `--user-data-dir`
+3. **Drag&drop, поиск** (Ctrl+F), sort_idx для порядка
+4. **Импорт браузерных закладок** — JSON/HTML
+5. **Диалог выбора файла для импорта** — сейчас путь захардкожен (`ua.dat`); нужен нативный file-picker или хотя бы поле ввода пути
+6. **Задвоение при повторном импорте** — повторное нажатие "Import ua.dat" добавляет данные поверх существующих; нужна проверка (очистка таблицы перед импортом или дедупликация)
 
 ## Меню — план (по образцу url-album-3)
 
@@ -179,7 +186,7 @@ MenuBar реализован (2026-06-01): меню Файл / Ссылки / П
 | Проверить ссылки | | |
 | Найти дубликаты | | |
 | — | | |
-| Обновить favicon'ы | | |
+| Обновить favicon'ы | | ✅ (ПКМ папки → рекурсивно) |
 | — | | |
 | Копировать URL | Ctrl+C | |
 | Свойства | F4 | ✅ (меню + ПКМ) |
@@ -212,6 +219,27 @@ MenuBar реализован (2026-06-01): меню Файл / Ссылки / П
 | Светлая/Тёмная тема | |
 | — | |
 | Настроить toolbar... | |
+
+## Favicon — архитектура
+
+**Файлы:** `target/.../favicons/{domain}.png` рядом с `album.db`. В БД хранится только имя файла.
+
+**`src/favicon.rs`:**
+- `fetch_favicon(url, favicons_dir) -> Option<String>` — 4-step:
+  1. `https://{domain}/favicon.ico` → `http://...` fallback
+  2. HTML `<link rel="icon">` (raster first, SVG last)
+  3. DuckDuckGo `https://icons.duckduckgo.com/ip3/{domain}.ico`
+  4. Google S2 `?domain={domain}&sz=32` — отклоняет placeholder ≤ 68 байт
+- `prepare_image(bytes)` — decode (`image` crate) → re-encode PNG; SVG отклоняется (Slint грузит растр)
+- `is_valid_image(bytes)` — PNG magic bytes `\x89PNG` (кэш всегда PNG)
+- `dedup_by_domain(nodes)` — один fetch на домен, остальные id в `same_ids`
+
+**Механизм обновления (идентично url-album-3, адаптировано под winit):**
+- Batch (ПКМ папки): 5 воркеров → `set_favicon(conn)` → `needs_rebuild.store(true)` → `slint::Timer` @ 200 мс проверяет флаг → `refresh_tree + refresh_contents` (полный пересброс обеих моделей). Последний воркер → `invoke_from_event_loop` → `invoke_favicon_done` → финальный refresh + очистка статуса через 3 с.
+- Single (ПКМ ссылки): 1 поток → `invoke_from_event_loop` → `invoke_favicon_done`.
+- url-album-3 использует `platform::set_frame_callback()` (кастомный Win32 бэкенд) — urlbum заменяет на `slint::Timer::default()` (стандартный winit).
+
+**`TreeItem` в Slint:** добавлены `favicon: image, has_favicon: bool`. Нет favicon → показывает `new-link.svg`.
 
 ## Импорт ua.dat — формат
 
@@ -292,3 +320,6 @@ loop {
   при одиночном клике НЕ нужен
 - Контекст создания узла (kind, parent) хранится в `prop-is-folder` + `state.current_folder`,
   новых полей State не требует — диалог модальный, навигация заблокирована
+- Favicon воркеры открывают свой `rusqlite::Connection` (не State.db) — то же что импорт
+- `slint::Timer` в favicon-batch: `mem::forget(timer)` — таймер живёт, idle после завершения (дёшево)
+- `slint::Image::load_from_path(&path)` — загрузка PNG в `Image` для `TreeItem.favicon`
