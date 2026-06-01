@@ -128,6 +128,7 @@ struct State {
 - ✅ Перетаскиваемый разделитель панелей (`tree-width` 120–600px, `mouse-cursor: col-resize`); панели без рамок
 - ✅ Нативный MenuBar: Файл (Импорт — подменю) / Ссылки / Поиск / Вид; рабочие пункты активны, будущие — `enabled: false`; вложенные Menu поддерживаются Slint 1.16
 - ✅ Правая панель: колонки "Название | Адрес" с заголовками и перетаскиваемым разделителем (`col-name-width`, clamp 80px … right-panel.width−100px); статусбар окна "Записей: N | База: album.db"
+- ✅ Иконки тулбара: SVG из url-album-2 (`assets/new-folder.svg`, `new-link.svg`, `delete.svg`, `import.svg`), `stroke="#444444"` (currentColor→фикс для resvg)
 
 ## Очередь фич (приоритет)
 
