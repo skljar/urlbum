@@ -150,10 +150,10 @@ export component AppWindow inherits Window {
         // Тулбар
         HorizontalBox {
             height: 40px;
-            Button { text: "New Folder";   clicked => { root.new-folder();      } }
-            Button { text: "New Bookmark"; clicked => { root.new-bookmark();    } }
-            Button { text: "Delete";       clicked => { root.delete-selected(); } }
-            Button { text: "Import ua.dat"; enabled: !root.import-in-progress; clicked => { root.import-ua-dat(); } }
+            Button { icon: @image-url("../assets/new-folder.svg"); clicked => { root.new-folder();      } }
+            Button { icon: @image-url("../assets/new-link.svg");   clicked => { root.new-bookmark();    } }
+            Button { icon: @image-url("../assets/delete.svg");     clicked => { root.delete-selected(); } }
+            Button { icon: @image-url("../assets/import.svg"); enabled: !root.import-in-progress; clicked => { root.import-ua-dat(); } }
             Text { text: root.import-status; vertical-alignment: center; color: #555555; font-size: 12px; }
             Rectangle { horizontal-stretch: 1; }
         }
