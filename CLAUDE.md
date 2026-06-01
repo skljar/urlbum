@@ -9,7 +9,7 @@
 
 - Rust + Slint 1.16 (winit backend, БЕЗ кастомного platform.rs)
 - Target: x86_64-pc-windows-msvc, Windows 10/11 ТОЛЬКО
-- SQLite через rusqlite 0.32 (bundled), crt-static → один portable exe ~11 МБ
+- SQLite через rusqlite 0.32 (bundled), crt-static → один portable exe ~16 МБ (arboard/rfd/serde_json добавили ~5 МБ)
 - webbrowser 1.2 — открытие URL (ShellExecuteW, без shell-injection)
 - НЕТ Win7/8 поддержки, НЕТ pe-patch, НЕТ compat.rs, НЕТ шимов
 - Сборка: обычный cargo build
