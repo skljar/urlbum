@@ -239,7 +239,7 @@ export component AppWindow inherits Window {
             }
 
             // ══ Правая панель — список или карточка ══
-            Rectangle {
+            right-panel := Rectangle {
                 horizontal-stretch: 1;
 
                 VerticalLayout {
@@ -263,7 +263,7 @@ export component AppWindow inherits Window {
                                 col-spl := TouchArea {
                                     mouse-cursor: col-resize;
                                     moved => {
-                                        root.col-name-width = max(80px, min(600px, root.col-name-width + self.mouse-x));
+                                        root.col-name-width = max(80px, min(right-panel.width - 100px, root.col-name-width + self.mouse-x));
                                     }
                                 }
                             }
