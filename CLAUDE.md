@@ -127,6 +127,7 @@ struct State {
 - ✅ Иконки папок: PNG из url-album-2 (`assets/folder-closed.png`, `folder-open.png`), `image-rendering: pixelated`
 - ✅ Перетаскиваемый разделитель панелей (`tree-width` 120–600px, `mouse-cursor: col-resize`); панели без рамок
 - ✅ Нативный MenuBar: Файл (Импорт — подменю) / Ссылки / Поиск / Вид; рабочие пункты активны, будущие — `enabled: false`; вложенные Menu поддерживаются Slint 1.16
+- ✅ Правая панель: колонки "Название | Адрес" с заголовками и перетаскиваемым разделителем (`col-name-width`, clamp 80px … right-panel.width−100px); статусбар окна "Записей: N | База: album.db"
 
 ## Очередь фич (приоритет)
 
