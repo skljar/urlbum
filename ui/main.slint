@@ -1,6 +1,8 @@
 import { Button, ListView, HorizontalBox, VerticalBox, LineEdit } from "std-widgets.slint";
 
-struct RecentDb { title: string, path: string }
+struct RecentDb  { title: string, path: string }
+struct DupGroup  { url: string, count: int }
+struct DupItem   { id: int, title: string, url: string, folder: string, created: string }
 
 // Универсальный узел: используется и в левом дереве, и в правом списке
 struct TreeItem {
@@ -140,13 +142,38 @@ export component AppWindow inherits Window {
     in property <int>    status-count: 0;
     in property <string> db-name: "album.db";
 
+    // --- Диалог дубликатов ---
+    in-out property <bool>       dup-visible: false;
+    in property    <[DupGroup]>  dup-groups;
+    in property    <[DupItem]>   dup-items;
+    in-out property <string>     dup-selected-url: "";
+    in-out property <int>        dup-selected-item-id: -1;
+    in-out property <int>        dup-groups-count: 0;
+    in-out property <int>        dup-copies-count: 0;
+    in-out property <int>        dup-extras-count: 0;
+    in-out property <int>        dup-items-count: 0;       // для confirmation
+    in-out property <bool>       dup-confirm-visible: false;
+    in-out property <bool>       dup-confirm-all-visible: false;
+    // Ширины splitter-ов диалога
+    in-out property <length>     dup-groups-width:     260px;
+    in-out property <length>     dup-col-title-width:  170px;
+    in-out property <length>     dup-col-url-width:    160px;
+    in-out property <length>     dup-col-folder-width: 160px;
+    callback dup-group-clicked(string);
+    callback dup-delete-selected();
+    callback dup-keep-one();
+    callback dup-delete-all();
+    callback dup-close();
+
     // --- Поиск ---
     in-out property <bool>      search-visible: false;
+    in-out property <bool>      search-is-duplicates: false;
     in-out property <string>    search-query: "";
     in property    <[TreeItem]> search-model;
     callback search-changed(string);
     callback search-result-activated(int);
     callback close-search();
+    callback find-duplicates();
 
     // --- Tooltip тулбара ---
     property <string> toolbar-tip: "";
@@ -220,7 +247,11 @@ export component AppWindow inherits Window {
             title: "Поиск";
             MenuItem {
                 title: "Найти...";
-                activated => { root.search-visible = true; }
+                activated => { root.search-visible = true; root.search-is-duplicates = false; }
+            }
+            MenuItem {
+                title: "Найти дубликаты";
+                activated => { root.find-duplicates(); }
             }
         }
 
@@ -250,13 +281,18 @@ export component AppWindow inherits Window {
         if root.search-visible: HorizontalBox {
             height: 34px;
             spacing: 6px;
-            Text { text: "Поиск:"; vertical-alignment: center; width: 50px; }
-            LineEdit {
+            Text {
+                text: root.search-is-duplicates ? "Дубликаты:" : "Поиск:";
+                vertical-alignment: center;
+                width: 80px;
+            }
+            if !root.search-is-duplicates: LineEdit {
                 horizontal-stretch: 1;
                 placeholder-text: "Введите текст...";
                 text <=> root.search-query;
                 edited(q) => { root.search-changed(q); }
             }
+            if root.search-is-duplicates: Rectangle { horizontal-stretch: 1; }
             Button { text: "✕"; width: 32px; clicked => { root.close-search(); } }
         }
 
@@ -804,6 +840,293 @@ export component AppWindow inherits Window {
                 }
                 HorizontalLayout { alignment: end;
                     Button { text: "ОК"; clicked => { root.db-props-visible = false; } }
+                }
+            }
+        }
+    }
+
+    // ══ Диалог дубликатов ════════════════════════════════════════════════════
+    if root.dup-visible: Rectangle {
+        x: 0; y: 0;
+        width: root.width; height: root.height;
+        background: #00000055;
+        TouchArea { /* поглощает клики на подложку */ }
+
+        Rectangle {
+            x: (root.width  - self.width)  / 2;
+            y: (root.height - self.height) / 2;
+            width: 820px; height: 500px;
+            background: #f5f5f5;
+            border-radius: 6px;
+            border-color: #aaaaaa;
+            border-width: 1px;
+
+            VerticalLayout {
+                padding: 12px;
+                spacing: 8px;
+
+                // Заголовок + сводка
+                Text { text: "Поиск дубликатов ссылок"; font-size: 14px; font-weight: 700; }
+                HorizontalLayout {
+                    spacing: 16px;
+                    Text { text: "Групп: "  + root.dup-groups-count; font-size: 12px; color: #444; }
+                    Text { text: "Копий: "  + root.dup-copies-count; font-size: 12px; color: #444; }
+                    Text { text: "Лишних: " + root.dup-extras-count; font-size: 12px; color: #cc4444; }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+
+                // Основная панель: левая (группы) + splitter + правая (копии)
+                HorizontalLayout {
+                    spacing: 0px;
+                    vertical-stretch: 1;
+
+                    // ── Левая: группы URL ──
+                    Rectangle {
+                        width: root.dup-groups-width;
+                        border-color: #cccccc; border-width: 1px;
+                        background: #ffffff;
+                        VerticalLayout {
+                            padding: 0px;
+                            Rectangle {
+                                height: 22px; background: #e8e8e8;
+                                Text { x: 6px; text: "Группы URL"; font-size: 11px; color: #555; vertical-alignment: center; }
+                            }
+                            ListView {
+                                vertical-stretch: 1;
+                                for g in root.dup-groups: Rectangle {
+                                    height: 26px;
+                                    background: g.url == root.dup-selected-url ? #d0e4ff : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 6px; padding-right: 4px; spacing: 4px;
+                                        Text {
+                                            text: g.url; font-size: 11px;
+                                            vertical-alignment: center; overflow: elide;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Rectangle {
+                                            width: 28px; background: #0078d4; border-radius: 9px;
+                                            Text {
+                                                text: g.count; color: #ffffff;
+                                                font-size: 10px; font-weight: 700;
+                                                horizontal-alignment: center; vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                    TouchArea { clicked => { root.dup-group-clicked(g.url); } }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Splitter между панелями ──
+                    Rectangle {
+                        width: 4px;
+                        background: dup-panel-spl.has-hover ? #0078d4 : #e0e0e0;
+                        dup-panel-spl := TouchArea {
+                            mouse-cursor: col-resize;
+                            moved => {
+                                root.dup-groups-width = max(150px, min(450px, root.dup-groups-width + self.mouse-x));
+                            }
+                        }
+                    }
+
+                    // ── Правая: копии выбранной группы ──
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        border-color: #cccccc; border-width: 1px;
+                        background: #ffffff;
+                        VerticalLayout {
+                            padding: 0px;
+                            // Заголовок панели
+                            Rectangle {
+                                height: 22px; background: #e8e8e8;
+                                Text {
+                                    x: 6px;
+                                    text: root.dup-selected-url == ""
+                                        ? "Дубликаты"
+                                        : "Дубликаты (" + root.dup-items-count + ")";
+                                    font-size: 11px; color: #555; vertical-alignment: center;
+                                }
+                            }
+                            // Заголовки колонок с splitter'ами
+                            Rectangle {
+                                height: 20px; background: #f0f0f0;
+                                HorizontalLayout {
+                                    padding-left: 6px; spacing: 0px;
+                                    Rectangle {
+                                        width: root.dup-col-title-width; clip: true;
+                                        Text { x: 0; text: "Название"; font-size: 10px; color: #666; vertical-alignment: center; }
+                                    }
+                                    Rectangle {
+                                        width: 5px;
+                                        background: spl-title.has-hover ? #0078d4 : #c0c8d0;
+                                        spl-title := TouchArea {
+                                            mouse-cursor: col-resize;
+                                            moved => { root.dup-col-title-width = max(60px, min(320px, root.dup-col-title-width + self.mouse-x)); }
+                                        }
+                                    }
+                                    Rectangle {
+                                        width: root.dup-col-url-width; clip: true;
+                                        Text { x: 0; text: "URL"; font-size: 10px; color: #666; vertical-alignment: center; }
+                                    }
+                                    Rectangle {
+                                        width: 5px;
+                                        background: spl-url.has-hover ? #0078d4 : #c0c8d0;
+                                        spl-url := TouchArea {
+                                            mouse-cursor: col-resize;
+                                            moved => { root.dup-col-url-width = max(60px, min(320px, root.dup-col-url-width + self.mouse-x)); }
+                                        }
+                                    }
+                                    Rectangle {
+                                        width: root.dup-col-folder-width; clip: true;
+                                        Text { x: 0; text: "Папка"; font-size: 10px; color: #666; vertical-alignment: center; }
+                                    }
+                                    Rectangle {
+                                        width: 5px;
+                                        background: spl-folder.has-hover ? #0078d4 : #c0c8d0;
+                                        spl-folder := TouchArea {
+                                            mouse-cursor: col-resize;
+                                            moved => { root.dup-col-folder-width = max(60px, min(320px, root.dup-col-folder-width + self.mouse-x)); }
+                                        }
+                                    }
+                                    Rectangle {
+                                        horizontal-stretch: 1;
+                                        Text { x: 0; text: "Дата"; font-size: 10px; color: #666; vertical-alignment: center; }
+                                    }
+                                }
+                            }
+                            // Строки копий
+                            ListView {
+                                vertical-stretch: 1;
+                                for item in root.dup-items: Rectangle {
+                                    height: 26px;
+                                    background: item.id == root.dup-selected-item-id ? #d0e4ff : transparent;
+                                    HorizontalLayout {
+                                        padding-left: 6px; spacing: 0px;
+                                        Rectangle { width: root.dup-col-title-width; clip: true;
+                                            Text { x: 0; text: item.title; font-size: 11px; vertical-alignment: center; overflow: elide; width: parent.width; }
+                                        }
+                                        Rectangle { width: 5px; background: #e8eaf0; }
+                                        Rectangle { width: root.dup-col-url-width; clip: true;
+                                            Text { x: 0; text: item.url; font-size: 11px; color: #0055cc; vertical-alignment: center; overflow: elide; width: parent.width; }
+                                        }
+                                        Rectangle { width: 5px; background: #e8eaf0; }
+                                        Rectangle { width: root.dup-col-folder-width; clip: true;
+                                            Text { x: 0; text: item.folder; font-size: 11px; color: #555; vertical-alignment: center; overflow: elide; width: parent.width; }
+                                        }
+                                        Rectangle { width: 5px; background: #e8eaf0; }
+                                        Rectangle { horizontal-stretch: 1; clip: true;
+                                            Text { x: 0; text: item.created; font-size: 11px; color: #555; vertical-alignment: center; overflow: elide; width: parent.width; }
+                                        }
+                                    }
+                                    TouchArea { clicked => { root.dup-selected-item-id = item.id; } }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Кнопки
+                HorizontalLayout {
+                    spacing: 8px;
+                    Button {
+                        text: "Удалить выбранный";
+                        enabled: root.dup-selected-item-id != -1;
+                        clicked => { root.dup-delete-selected(); }
+                    }
+                    Button {
+                        text: "Оставить одну ссылку";
+                        enabled: root.dup-selected-url != "";
+                        clicked => { root.dup-confirm-visible = true; }
+                    }
+                    Button {
+                        text: "Удалить все дубликаты";
+                        enabled: root.dup-extras-count > 0;
+                        clicked => { root.dup-confirm-all-visible = true; }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Button { text: "Закрыть"; clicked => { root.dup-close(); } }
+                }
+            }
+
+            // Confirmation overlay — "Оставить одну ссылку"
+            if root.dup-confirm-visible: Rectangle {
+                x: 0; y: 0;
+                width: parent.width; height: parent.height;
+                background: #00000044;
+                TouchArea { /* блокировать клики */ }
+
+                Rectangle {
+                    x: (parent.width  - self.width)  / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: 360px; height: 120px;
+                    background: #f5f5f5;
+                    border-radius: 6px;
+                    border-color: #aaaaaa;
+                    border-width: 1px;
+
+                    VerticalBox {
+                        padding: 16px; spacing: 12px;
+                        Text {
+                            text: "Будет удалено " + (root.dup-items-count - 1) + " копий. Продолжить?";
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            alignment: end; spacing: 8px;
+                            Button {
+                                text: "Да";
+                                clicked => {
+                                    root.dup-confirm-visible = false;
+                                    root.dup-keep-one();
+                                }
+                            }
+                            Button {
+                                text: "Отмена";
+                                clicked => { root.dup-confirm-visible = false; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Confirmation overlay — "Удалить все дубликаты"
+            if root.dup-confirm-all-visible: Rectangle {
+                x: 0; y: 0;
+                width: parent.width; height: parent.height;
+                background: #00000044;
+                TouchArea { /* блокировать клики */ }
+                Rectangle {
+                    x: (parent.width  - self.width)  / 2;
+                    y: (parent.height - self.height) / 2;
+                    width: 400px; height: 130px;
+                    background: #f5f5f5;
+                    border-radius: 6px;
+                    border-color: #aaaaaa;
+                    border-width: 1px;
+                    VerticalBox {
+                        padding: 16px; spacing: 12px;
+                        Text {
+                            text: "Будет удалено " + root.dup-extras-count
+                                + " лишних копий из всей базы. Продолжить?";
+                            font-size: 13px;
+                            wrap: word-wrap;
+                        }
+                        HorizontalLayout {
+                            alignment: end; spacing: 8px;
+                            Button {
+                                text: "Да";
+                                clicked => {
+                                    root.dup-confirm-all-visible = false;
+                                    root.dup-delete-all();
+                                }
+                            }
+                            Button {
+                                text: "Отмена";
+                                clicked => { root.dup-confirm-all-visible = false; }
+                            }
+                        }
+                    }
                 }
             }
         }

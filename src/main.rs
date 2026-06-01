@@ -13,7 +13,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use slint::{Image, VecModel};
+use slint::{Image, Model, VecModel};
 
 struct State {
     db:                 rusqlite::Connection,
@@ -189,8 +189,10 @@ fn reset_ui_state(s: &mut State, w: &AppWindow) {
     w.set_status_visible(false);
     w.set_show_card(false);
     w.set_search_visible(false);
+    w.set_search_is_duplicates(false);
     w.set_search_query("".into());
     w.set_search_model(Rc::new(VecModel::from(vec![])).into());
+    w.set_dup_visible(false);
     refresh_tree(s, w);
     refresh_contents(s, w);
 }
@@ -956,8 +958,187 @@ fn main() {
     window.on_close_search(move || {
         let w = ww.upgrade().unwrap();
         w.set_search_visible(false);
+        w.set_search_is_duplicates(false);
         w.set_search_query("".into());
         w.set_search_model(Rc::new(VecModel::from(vec![])).into());
+    });
+
+    // ── Найти дубликаты: открыть диалог ──────────────────────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_find_duplicates(move || {
+        let w = ww.upgrade().unwrap();
+        let s = sc.borrow();
+        let groups = db::find_duplicate_groups(&s.db).unwrap_or_default();
+        let groups_count = groups.len() as i32;
+        let copies_count: i32 = groups.iter().map(|(_, c)| *c as i32).sum();
+        let extras_count  = copies_count - groups_count;
+        let dup_groups: Vec<DupGroup> = groups
+            .into_iter()
+            .map(|(url, count)| DupGroup { url: url.into(), count: count as i32 })
+            .collect();
+        w.set_dup_groups(Rc::new(VecModel::from(dup_groups)).into());
+        w.set_dup_groups_count(groups_count);
+        w.set_dup_copies_count(copies_count);
+        w.set_dup_extras_count(extras_count);
+        w.set_dup_items(Rc::new(VecModel::from(vec![])).into());
+        w.set_dup_items_count(0);
+        w.set_dup_selected_url("".into());
+        w.set_dup_selected_item_id(-1);
+        w.set_dup_confirm_visible(false);
+        w.set_dup_visible(true);
+    });
+
+    // ── Группа выбрана в левой панели ────────────────────────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_dup_group_clicked(move |url| {
+        let w = ww.upgrade().unwrap();
+        let s = sc.borrow();
+        let items = db::find_duplicates_for_url(&s.db, &url).unwrap_or_default();
+        let count = items.len() as i32;
+        let slint_items: Vec<DupItem> = items
+            .into_iter()
+            .map(|d| DupItem {
+                id:      d.id as i32,
+                title:   d.title.into(),
+                url:     d.url.into(),
+                folder:  d.folder.into(),
+                created: d.created.into(),
+            })
+            .collect();
+        w.set_dup_items(Rc::new(VecModel::from(slint_items)).into());
+        w.set_dup_items_count(count);
+        w.set_dup_selected_url(url);
+        w.set_dup_selected_item_id(-1);
+    });
+
+    // ── Удалить выбранную копию ───────────────────────────────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_dup_delete_selected(move || {
+        let w = ww.upgrade().unwrap();
+        let mut s = sc.borrow_mut();
+        let item_id = w.get_dup_selected_item_id();
+        if item_id == -1 { return; }
+        let _ = db::delete_node(&s.db, item_id as i64);
+        s.expanded.remove(&(item_id as i64));
+        // Обновляем правую панель
+        let url = w.get_dup_selected_url().to_string();
+        let items = db::find_duplicates_for_url(&s.db, &url).unwrap_or_default();
+        let count = items.len() as i32;
+        if count < 2 {
+            // Группа больше не дубликат — убираем из левой панели
+            let remaining: Vec<DupGroup> = (0..w.get_dup_groups().row_count())
+                .filter_map(|i| {
+                    let g = w.get_dup_groups().row_data(i)?;
+                    if g.url.as_str() != url { Some(g) } else { None }
+                })
+                .collect();
+            let groups_count = remaining.len() as i32;
+            let copies_count: i32 = remaining.iter().map(|g| g.count).sum();
+            w.set_dup_groups(Rc::new(VecModel::from(remaining)).into());
+            w.set_dup_groups_count(groups_count);
+            w.set_dup_copies_count(copies_count);
+            w.set_dup_extras_count(copies_count - groups_count);
+            w.set_dup_items(Rc::new(VecModel::from(vec![])).into());
+            w.set_dup_items_count(0);
+            w.set_dup_selected_url("".into());
+            w.set_dup_selected_item_id(-1);
+        } else {
+            let slint_items: Vec<DupItem> = items
+                .into_iter()
+                .map(|d| DupItem {
+                    id:      d.id as i32,
+                    title:   d.title.into(),
+                    url:     d.url.into(),
+                    folder:  d.folder.into(),
+                    created: d.created.into(),
+                })
+                .collect();
+            // Обновляем счётчик группы в левой панели
+            let updated: Vec<DupGroup> = (0..w.get_dup_groups().row_count())
+                .filter_map(|i| w.get_dup_groups().row_data(i))
+                .map(|g| if g.url.as_str() == url { DupGroup { count: count, ..g } } else { g })
+                .collect();
+            let copies_count: i32 = updated.iter().map(|g| g.count).sum();
+            let groups_count = updated.len() as i32;
+            w.set_dup_groups(Rc::new(VecModel::from(updated)).into());
+            w.set_dup_copies_count(copies_count);
+            w.set_dup_extras_count(copies_count - groups_count);
+            w.set_dup_items(Rc::new(VecModel::from(slint_items)).into());
+            w.set_dup_items_count(count);
+            w.set_dup_selected_item_id(-1);
+        }
+    });
+
+    // ── Оставить одну копию (подтверждение уже получено) ─────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_dup_keep_one(move || {
+        let w = ww.upgrade().unwrap();
+        let mut s = sc.borrow_mut();
+        let url = w.get_dup_selected_url().to_string();
+        if url.is_empty() { return; }
+        // keep_id: выбранный или min(id) = первый в списке (order by id)
+        let keep_id = {
+            let sel = w.get_dup_selected_item_id();
+            if sel != -1 {
+                sel as i64
+            } else {
+                // первый элемент (наименьший id) из правой панели
+                w.get_dup_items().row_data(0).map(|d| d.id as i64).unwrap_or(-1)
+            }
+        };
+        if keep_id == -1 { return; }
+        let _ = db::delete_all_but_id(&s.db, &url, keep_id);
+        s.expanded.retain(|id| {
+            // очищаем expanded для удалённых (не критично, но аккуратно)
+            let _ = id;
+            true
+        });
+        // Убираем группу из левой панели
+        let remaining: Vec<DupGroup> = (0..w.get_dup_groups().row_count())
+            .filter_map(|i| {
+                let g = w.get_dup_groups().row_data(i)?;
+                if g.url.as_str() != url { Some(g) } else { None }
+            })
+            .collect();
+        let groups_count = remaining.len() as i32;
+        let copies_count: i32 = remaining.iter().map(|g| g.count).sum();
+        w.set_dup_groups(Rc::new(VecModel::from(remaining)).into());
+        w.set_dup_groups_count(groups_count);
+        w.set_dup_copies_count(copies_count);
+        w.set_dup_extras_count(copies_count - groups_count);
+        w.set_dup_items(Rc::new(VecModel::from(vec![])).into());
+        w.set_dup_items_count(0);
+        w.set_dup_selected_url("".into());
+        w.set_dup_selected_item_id(-1);
+    });
+
+    // ── Удалить все дубликаты (оставить MIN(id) по каждому URL) ─────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_dup_delete_all(move || {
+        let w = ww.upgrade().unwrap();
+        let s = sc.borrow();
+        let _ = db::delete_all_duplicates(&s.db);
+        // Очищаем диалог — дубликатов больше нет
+        w.set_dup_groups(Rc::new(VecModel::from(vec![])).into());
+        w.set_dup_items(Rc::new(VecModel::from(vec![])).into());
+        w.set_dup_groups_count(0);
+        w.set_dup_copies_count(0);
+        w.set_dup_extras_count(0);
+        w.set_dup_items_count(0);
+        w.set_dup_selected_url("".into());
+        w.set_dup_selected_item_id(-1);
+        refresh_tree(&s, &w);
+        refresh_contents(&s, &w);
+    });
+
+    // ── Закрыть диалог дубликатов ─────────────────────────────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_dup_close(move || {
+        let w = ww.upgrade().unwrap();
+        w.set_dup_visible(false);
+        let s = sc.borrow();
+        refresh_tree(&s, &w);
+        refresh_contents(&s, &w);
     });
 
     window.run().unwrap();

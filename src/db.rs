@@ -1,6 +1,15 @@
 use rusqlite::{Connection, Result, params};
 
 #[derive(Debug, Clone)]
+pub struct DupItem {
+    pub id:      i64,
+    pub title:   String,
+    pub url:     String,
+    pub folder:  String,   // "Root › Sub › Leaf" — путь папки
+    pub created: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct Node {
     pub id: i64,
     pub parent: Option<i64>,
@@ -214,6 +223,133 @@ pub fn search(conn: &Connection, query: &str) -> Result<Vec<Node>> {
         })?
         .collect::<Result<Vec<_>>>()?;
     Ok(nodes)
+}
+
+pub fn find_duplicates(conn: &Connection) -> Result<Vec<Node>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, parent, kind, title, url, note, sort_idx
+         FROM nodes
+         WHERE kind = 'bookmark'
+           AND url IS NOT NULL AND url != ''
+           AND url IN (
+               SELECT url FROM nodes
+               WHERE kind = 'bookmark' AND url IS NOT NULL AND url != ''
+               GROUP BY url HAVING COUNT(*) > 1
+           )
+         ORDER BY url, title",
+    )?;
+    let nodes = stmt
+        .query_map([], |row| {
+            Ok(Node {
+                id:       row.get(0)?,
+                parent:   row.get(1)?,
+                kind:     row.get(2)?,
+                title:    row.get(3)?,
+                url:      row.get(4)?,
+                note:     row.get(5)?,
+                sort_idx: row.get(6)?,
+                created:  None,
+                visited:  None,
+            })
+        })?
+        .collect::<Result<Vec<_>>>()?;
+    Ok(nodes)
+}
+
+// ── Дубликаты ─────────────────────────────────────────────────────────────────
+
+// Путь папки по parent id: итеративный подъём по parent-chain, join " › "
+pub fn get_folder_path(conn: &Connection, parent: Option<i64>) -> String {
+    let Some(mut current) = parent else { return String::new() };
+    let mut path = Vec::new();
+    for _ in 0..10 {
+        match conn.query_row(
+            "SELECT title, parent FROM nodes WHERE id = ?1",
+            [current],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?)),
+        ) {
+            Ok((title, par)) => {
+                path.push(title);
+                match par { Some(p) if p > 0 => current = p, _ => break }
+            }
+            Err(_) => break,
+        }
+    }
+    path.reverse();
+    path.join(" › ")
+}
+
+// Уникальные URL с количеством копий > 1, сортировка по кол-ву desc, url asc
+pub fn find_duplicate_groups(conn: &Connection) -> Result<Vec<(String, i64)>> {
+    let mut stmt = conn.prepare(
+        "SELECT url, COUNT(*) AS cnt FROM nodes
+         WHERE kind = 'bookmark' AND url IS NOT NULL AND url != ''
+         GROUP BY url HAVING cnt > 1
+         ORDER BY cnt DESC, url",
+    )?;
+    let groups = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+        .collect::<Result<Vec<_>>>()?;
+    Ok(groups)
+}
+
+// Все копии конкретного URL, с путём папки; порядок по id (= по дате создания)
+pub fn find_duplicates_for_url(conn: &Connection, url: &str) -> Result<Vec<DupItem>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, title, url, parent, coalesce(created, '') FROM nodes
+         WHERE kind = 'bookmark' AND url = ?1
+         ORDER BY id",
+    )?;
+    let raw: Vec<(i64, String, String, Option<i64>, String)> = stmt
+        .query_map([url], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<i64>>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>>>()?;
+    drop(stmt); // освобождаем borrow conn до вызовов get_folder_path
+    Ok(raw
+        .into_iter()
+        .map(|(id, title, url, parent, created)| DupItem {
+            id,
+            title,
+            url,
+            folder: get_folder_path(conn, parent),
+            created,
+        })
+        .collect())
+}
+
+// Удалить все дубликаты во всей БД: для каждого URL оставить MIN(id)
+pub fn delete_all_duplicates(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "DELETE FROM nodes
+         WHERE kind = 'bookmark'
+           AND url IS NOT NULL AND url != ''
+           AND url IN (
+               SELECT url FROM nodes
+               WHERE kind = 'bookmark' AND url IS NOT NULL AND url != ''
+               GROUP BY url HAVING COUNT(*) > 1
+           )
+           AND id NOT IN (
+               SELECT MIN(id) FROM nodes
+               WHERE kind = 'bookmark' AND url IS NOT NULL AND url != ''
+               GROUP BY url
+           )",
+    )
+}
+
+// Удалить все копии url, кроме keep_id
+pub fn delete_all_but_id(conn: &Connection, url: &str, keep_id: i64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM nodes WHERE kind = 'bookmark' AND url = ?1 AND id != ?2",
+        params![url, keep_id],
+    )?;
+    Ok(())
 }
 
 pub fn delete_node(conn: &Connection, id: i64) -> Result<()> {
