@@ -129,6 +129,7 @@ struct State {
 - ✅ Нативный MenuBar: Файл (Импорт — подменю) / Ссылки / Поиск / Вид; рабочие пункты активны, будущие — `enabled: false`; вложенные Menu поддерживаются Slint 1.16
 - ✅ Правая панель: колонки "Название | Адрес" с заголовками и перетаскиваемым разделителем (`col-name-width`, clamp 80px … right-panel.width−100px); статусбар окна "Записей: N | База: album.db"
 - ✅ Иконки тулбара: SVG из url-album-2 (`assets/new-folder.svg`, `new-link.svg`, `delete.svg`, `import.svg`), `stroke="#444444"` (currentColor→фикс для resvg)
+- ✅ Кнопки тулбара: компонент `TBtn` (hover #d8eaf8 + border, disabled #f0f0f0); tooltip под курсором (#ffffe1, рамка #999) — координаты из `absolute-position + mouse-x/y` в `changed has-hover`
 
 ## Очередь фич (приоритет)
 
