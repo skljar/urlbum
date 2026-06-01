@@ -188,6 +188,9 @@ fn reset_ui_state(s: &mut State, w: &AppWindow) {
     w.set_status_id(-1);
     w.set_status_visible(false);
     w.set_show_card(false);
+    w.set_search_visible(false);
+    w.set_search_query("".into());
+    w.set_search_model(Rc::new(VecModel::from(vec![])).into());
     refresh_tree(s, w);
     refresh_contents(s, w);
 }
@@ -903,6 +906,58 @@ fn main() {
     let ww = window.as_weak();
     window.on_cancel_properties(move || {
         ww.upgrade().unwrap().set_prop_visible(false);
+    });
+
+    // ── Поиск: запрос изменился ───────────────────────────────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_search_changed(move |query| {
+        let w = ww.upgrade().unwrap();
+        let s = sc.borrow();
+        if query.is_empty() {
+            w.set_search_model(Rc::new(VecModel::from(vec![])).into());
+            return;
+        }
+        let favicons     = db::get_favicons(&s.db);
+        let favicons_dir = s.favicons_dir();
+        let items: Vec<TreeItem> = db::search(&s.db, &query)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|n| {
+                let (fav, has_fav) = load_favicon(n.id, &favicons, &favicons_dir);
+                TreeItem {
+                    id:          n.id as i32,
+                    title:       n.title.into(),
+                    depth:       0,
+                    expanded:    false,
+                    is_folder:   false,
+                    url:         n.url.unwrap_or_default().into(),
+                    favicon:     fav,
+                    has_favicon: has_fav,
+                }
+            })
+            .collect();
+        w.set_search_model(Rc::new(VecModel::from(items)).into());
+    });
+
+    // ── Поиск: открыть результат (activate + закрыть поиск) ──────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_search_result_activated(move |id| {
+        let id64 = id as i64;
+        let mut s = sc.borrow_mut();
+        let w = ww.upgrade().unwrap();
+        s.selected_id        = Some(id64);
+        s.selected_is_folder = false;
+        activate_bookmark(id64, &s.db, &w);
+        w.set_search_visible(false);
+    });
+
+    // ── Поиск: закрыть ───────────────────────────────────────────────────────
+    let ww = window.as_weak();
+    window.on_close_search(move || {
+        let w = ww.upgrade().unwrap();
+        w.set_search_visible(false);
+        w.set_search_query("".into());
+        w.set_search_model(Rc::new(VecModel::from(vec![])).into());
     });
 
     window.run().unwrap();

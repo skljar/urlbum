@@ -191,6 +191,31 @@ pub fn get_all_folder_ids(conn: &Connection) -> Vec<i64> {
         .unwrap_or_default()
 }
 
+pub fn search(conn: &Connection, query: &str) -> Result<Vec<Node>> {
+    let pattern = format!("%{query}%");
+    let mut stmt = conn.prepare(
+        "SELECT id, parent, kind, title, url, note, sort_idx
+         FROM nodes WHERE kind='bookmark' AND (title LIKE ?1 OR url LIKE ?1)
+         ORDER BY title",
+    )?;
+    let nodes = stmt
+        .query_map([&pattern], |row| {
+            Ok(Node {
+                id:       row.get(0)?,
+                parent:   row.get(1)?,
+                kind:     row.get(2)?,
+                title:    row.get(3)?,
+                url:      row.get(4)?,
+                note:     row.get(5)?,
+                sort_idx: row.get(6)?,
+                created:  None,
+                visited:  None,
+            })
+        })?
+        .collect::<Result<Vec<_>>>()?;
+    Ok(nodes)
+}
+
 pub fn delete_node(conn: &Connection, id: i64) -> Result<()> {
     // safe: id is i64, not user-supplied string
     conn.execute_batch(&format!(
