@@ -14,6 +14,17 @@
 - НЕТ Win7/8 поддержки, НЕТ pe-patch, НЕТ compat.rs, НЕТ шимов
 - Сборка: обычный cargo build
 
+## Запуск и сборка
+
+- **Канонический путь к exe:** `target\x86_64-pc-windows-msvc\debug\urlbum.exe` — из-за явного таргета в `.cargo/config.toml` сборки идут **не** в `target\debug\`, а в `target\x86_64-pc-windows-msvc\debug\`.
+- **Запускать всегда с рабочей директорией на ту же папку:**
+  ```powershell
+  Start-Process "...\target\x86_64-pc-windows-msvc\debug\urlbum.exe" -WorkingDirectory "...\target\x86_64-pc-windows-msvc\debug"
+  ```
+- **Release без явной просьбы не собирать** — уходит в `target\x86_64-pc-windows-msvc\release\` (другая папка, легко перепутать сборки).
+- **База данных в проекте не хранится** — она у пользователя отдельно, открывается через меню "Файл → Открыть базу данных...". При первом старте программа может создать пустую `album.db` рядом с exe — это не рабочая база.
+- **Для теста:** debug-сборка + наполненная база, открытая через меню.
+
 ## Структура
 
 - `src/main.rs` — State (Rc<RefCell>), UI callbacks, refresh функции
