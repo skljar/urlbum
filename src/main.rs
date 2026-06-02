@@ -3,6 +3,7 @@ slint::include_modules!();
 mod db;
 mod favicon;
 mod import;
+mod settings;
 
 extern crate webbrowser;
 
@@ -26,6 +27,7 @@ struct State {
     status_id:          Option<i64>,
     expanded:           HashSet<i64>,
     favicon_cancel:     Arc<AtomicBool>,     // сброс при смене базы → воркеры прекращают запись
+    settings:           settings::Settings,
 }
 
 impl State {
@@ -226,6 +228,39 @@ fn activate_bookmark(id: i64, db: &rusqlite::Connection, w: &AppWindow) {
     w.set_status_visible(false);
 }
 
+// ─── Сворачивание соседних папок при раскрытии ───────────────────────────────
+
+fn collapse_siblings_if_needed(s: &mut State, expanding_id: i64) {
+    if !s.settings.collapse_siblings { return; }
+    if let Ok(node) = db::get_node(&s.db, expanding_id) {
+        if let Ok(siblings) = db::get_children(&s.db, node.parent) {
+            for sib in siblings {
+                if sib.id != expanding_id && sib.kind == "folder" {
+                    s.expanded.remove(&sib.id);
+                }
+            }
+        }
+    }
+}
+
+// ─── Удаление выбранного узла ────────────────────────────────────────────────
+
+fn do_delete_selected(s: &mut State, w: &AppWindow) {
+    if let Some(id) = s.selected_id {
+        let _ = db::delete_node(&s.db, id);
+        if s.current_folder == Some(id) { s.current_folder = None; }
+        s.expanded.remove(&id);
+        s.selected_id = None;
+        s.status_id   = None;
+    }
+    w.set_selected_id(-1);
+    w.set_status_id(-1);
+    w.set_status_visible(false);
+    w.set_show_card(false);
+    refresh_tree(s, w);
+    refresh_contents(s, w);
+}
+
 // ─── main ────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -247,6 +282,7 @@ fn main() {
         status_id:          None,
         expanded:           HashSet::new(),
         favicon_cancel:     Arc::new(AtomicBool::new(false)),
+        settings:           settings::load_settings(&exe_dir),
     }));
 
     let window = AppWindow::new().unwrap();
@@ -261,6 +297,7 @@ fn main() {
         refresh_tree(&s, &window);
         refresh_contents(&s, &window);
         apply_recent_dbs(&s.exe_dir, &window);
+        window.set_settings_toolbar_visible(s.settings.show_toolbar);
     }
 
     // ── Клик по узлу в левом дереве ──────────────────────────────────────────
@@ -274,6 +311,7 @@ fn main() {
             if s.expanded.contains(&id64) {
                 s.expanded.remove(&id64);
             } else {
+                collapse_siblings_if_needed(&mut s, id64);
                 s.expanded.insert(id64);
             }
             s.selected_id        = Some(id64);
@@ -326,6 +364,7 @@ fn main() {
 
         if is_folder {
             if !s.expanded.contains(&id64) {
+                collapse_siblings_if_needed(&mut s, id64);
                 s.expanded.insert(id64);
             }
             s.selected_id        = Some(id64);
@@ -353,6 +392,7 @@ fn main() {
         if s.expanded.contains(&id64) {
             s.expanded.remove(&id64);
         } else {
+            collapse_siblings_if_needed(&mut s, id64);
             s.expanded.insert(id64);
         }
         let w = ww.upgrade().unwrap();
@@ -370,6 +410,7 @@ fn main() {
             if s.expanded.contains(&id64) {
                 s.expanded.remove(&id64);
             } else {
+                collapse_siblings_if_needed(&mut s, id64);
                 s.expanded.insert(id64);
             }
             s.selected_id        = Some(id64);
@@ -399,6 +440,7 @@ fn main() {
         w.set_prop_title("".into());
         w.set_prop_url("".into());
         w.set_prop_note("".into());
+        w.set_prop_error("".into());
         w.set_prop_visible(true);
     });
 
@@ -412,29 +454,32 @@ fn main() {
         w.set_prop_title("".into());
         w.set_prop_url("https://".into());
         w.set_prop_note("".into());
+        w.set_prop_error("".into());
         w.set_prop_visible(true);
     });
 
-    // ── Удалить выбранный узел ────────────────────────────────────────────────
+    // ── Удалить выбранный узел (вызывается кнопкой "Да" в диалоге подтверждения) ──
     let (sc, ww) = (Rc::clone(&state), window.as_weak());
     window.on_delete_selected(move || {
         let mut s = sc.borrow_mut();
-        if let Some(id) = s.selected_id {
-            let _ = db::delete_node(&s.db, id);
-            if s.current_folder == Some(id) {
-                s.current_folder = None;
-            }
-            s.expanded.remove(&id);
-            s.selected_id = None;
-            s.status_id   = None;
-        }
         let w = ww.upgrade().unwrap();
-        w.set_selected_id(-1);
-        w.set_status_id(-1);
-        w.set_status_visible(false);
-        w.set_show_card(false);
-        refresh_tree(&s, &w);
-        refresh_contents(&s, &w);
+        do_delete_selected(&mut s, &w);
+    });
+
+    // ── Запросить удаление (меню / тулбар / ПКМ — с проверкой настройки) ─────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_request_delete(move || {
+        let w = ww.upgrade().unwrap();
+        let needs_confirm = {
+            let s = sc.borrow();
+            s.settings.confirm_delete && s.selected_id.is_some()
+        };
+        if needs_confirm {
+            w.set_delete_confirm_visible(true);
+        } else {
+            let mut s = sc.borrow_mut();
+            do_delete_selected(&mut s, &w);
+        }
     });
 
     // ── Контекстное меню: ПКМ ────────────────────────────────────────────────
@@ -481,6 +526,7 @@ fn main() {
             w.set_prop_url(node.url.unwrap_or_default().into());
             w.set_prop_note(node.note.unwrap_or_default().into());
             w.set_prop_is_folder(node.kind == "folder");
+            w.set_prop_error("".into());
             w.set_prop_visible(true);
         }
     });
@@ -502,6 +548,16 @@ fn main() {
         if is_new {
             let kind   = if is_folder { "folder" } else { "bookmark" };
             let parent = s.current_folder;
+
+            if !is_folder && s.settings.no_duplicate_urls {
+                if let Some(u) = url {
+                    if db::url_exists(&s.db, u) {
+                        w.set_prop_error("URL уже существует в базе".into());
+                        return;
+                    }
+                }
+            }
+
             if let Ok(new_id) = db::insert_node(&s.db, parent, kind, title.as_str(), url, note) {
                 if let Some(p) = parent { s.expanded.insert(p); }
                 s.selected_id        = Some(new_id);
@@ -849,6 +905,39 @@ fn main() {
         w.set_db_props_folders(folders as i32);
         w.set_db_props_bookmarks(bookmarks as i32);
         w.set_db_props_visible(true);
+    });
+
+    // ── Открыть диалог настроек ───────────────────────────────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_settings_open(move || {
+        let s = sc.borrow();
+        let w = ww.upgrade().unwrap();
+        w.set_settings_show_toolbar(s.settings.show_toolbar);
+        w.set_settings_collapse_siblings(s.settings.collapse_siblings);
+        w.set_settings_confirm_delete(s.settings.confirm_delete);
+        w.set_settings_no_duplicate_urls(s.settings.no_duplicate_urls);
+        w.set_settings_db_path(s.db_path.as_str().into());
+        w.set_settings_visible(true);
+    });
+
+    // ── Сохранить настройки ───────────────────────────────────────────────────
+    let (sc, ww) = (Rc::clone(&state), window.as_weak());
+    window.on_settings_save(move || {
+        let w = ww.upgrade().unwrap();
+        let mut s = sc.borrow_mut();
+        s.settings.show_toolbar      = w.get_settings_show_toolbar();
+        s.settings.collapse_siblings = w.get_settings_collapse_siblings();
+        s.settings.confirm_delete    = w.get_settings_confirm_delete();
+        s.settings.no_duplicate_urls = w.get_settings_no_duplicate_urls();
+        settings::save_settings(&s.exe_dir, &s.settings);
+        w.set_settings_toolbar_visible(s.settings.show_toolbar);
+        w.set_settings_visible(false);
+    });
+
+    // ── Закрыть настройки без сохранения ─────────────────────────────────────
+    let ww = window.as_weak();
+    window.on_settings_cancel(move || {
+        ww.upgrade().unwrap().set_settings_visible(false);
     });
 
     // ── Выход ────────────────────────────────────────────────────────────────

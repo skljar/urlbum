@@ -103,6 +103,14 @@ pub fn insert_node(
     Ok(conn.last_insert_rowid())
 }
 
+pub fn url_exists(conn: &Connection, url: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM nodes WHERE kind='bookmark' AND url=?1",
+        [url],
+        |r| r.get::<_, i64>(0),
+    ).unwrap_or(0) > 0
+}
+
 pub fn update_node(
     conn: &Connection,
     id: i64,
@@ -388,6 +396,21 @@ mod tests {
         )
         .unwrap();
         conn
+    }
+
+    #[test]
+    fn url_exists_returns_true_for_existing_bookmark() {
+        let conn = test_db();
+        insert_node(&conn, None, "bookmark", "A", Some("https://example.com"), None).unwrap();
+        assert!(url_exists(&conn, "https://example.com"));
+        assert!(!url_exists(&conn, "https://other.com"));
+    }
+
+    #[test]
+    fn url_exists_ignores_folders() {
+        let conn = test_db();
+        insert_node(&conn, None, "folder", "F", Some("https://example.com"), None).unwrap();
+        assert!(!url_exists(&conn, "https://example.com"), "folder url should not count");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { Button, ListView, HorizontalBox, VerticalBox, LineEdit } from "std-widgets.slint";
+import { Button, ListView, HorizontalBox, VerticalBox, LineEdit, CheckBox, TabWidget } from "std-widgets.slint";
 
 struct RecentDb  { title: string, path: string }
 struct DupGroup  { url: string, count: int }
@@ -175,6 +175,25 @@ export component AppWindow inherits Window {
     callback close-search();
     callback find-duplicates();
 
+    // --- Настройки ---
+    in-out property <bool>   settings-visible: false;
+    in-out property <bool>   settings-toolbar-visible: true;
+    in-out property <bool>   settings-show-toolbar: true;
+    in-out property <bool>   settings-collapse-siblings: false;
+    in-out property <bool>   settings-confirm-delete: true;
+    in-out property <bool>   settings-no-duplicate-urls: false;
+    in-out property <string> settings-db-path: "";
+    callback settings-open();
+    callback settings-save();
+    callback settings-cancel();
+
+    // --- Подтверждение удаления ---
+    in-out property <bool> delete-confirm-visible: false;
+    callback request-delete();
+
+    // --- Ошибка в диалоге свойств ---
+    in-out property <string> prop-error: "";
+
     // --- Tooltip тулбара ---
     property <string> toolbar-tip: "";
     property <float>  toolbar-tip-x: 0;
@@ -221,7 +240,7 @@ export component AppWindow inherits Window {
             MenuSeparator {}
             MenuItem { title: "Свойства базы данных"; activated => { root.show-db-props(); } }
             MenuSeparator {}
-            MenuItem { title: "Настройки...";           enabled: false; }
+            MenuItem { title: "Настройки..."; activated => { root.settings-open(); } }
             MenuSeparator {}
             MenuItem { title: "Выход"; activated => { root.quit-app(); } }
         }
@@ -233,7 +252,7 @@ export component AppWindow inherits Window {
             MenuItem { title: "Новая папка";              activated => { root.new-folder();   } }
             MenuItem { title: "Новая ссылка";             activated => { root.new-bookmark(); } }
             MenuSeparator {}
-            MenuItem { title: "Удалить";                  activated => { root.delete-selected(); } }
+            MenuItem { title: "Удалить";                  activated => { root.request-delete(); } }
             MenuSeparator {}
             MenuItem { title: "Открыть";                  activated => { root.ctx-open-browser(root.selected-id); } }
             MenuItem { title: "Открыть с помощью...";     enabled: false; }
@@ -267,11 +286,11 @@ export component AppWindow inherits Window {
 
     VerticalBox {
         // Тулбар
-        HorizontalBox {
+        if root.settings-toolbar-visible: HorizontalBox {
             height: 40px;
-            TBtn { icon: @image-url("../assets/new-folder.svg"); tip: "Новая папка";       hovered(t,x,y) => { root.toolbar-tip=t; root.toolbar-tip-x=x; root.toolbar-tip-y=y; } clicked => { root.new-folder();      } }
-            TBtn { icon: @image-url("../assets/new-link.svg");   tip: "Новая ссылка";     hovered(t,x,y) => { root.toolbar-tip=t; root.toolbar-tip-x=x; root.toolbar-tip-y=y; } clicked => { root.new-bookmark();    } }
-            TBtn { icon: @image-url("../assets/delete.svg");     tip: "Удалить";          hovered(t,x,y) => { root.toolbar-tip=t; root.toolbar-tip-x=x; root.toolbar-tip-y=y; } clicked => { root.delete-selected(); } }
+            TBtn { icon: @image-url("../assets/new-folder.svg"); tip: "Новая папка";       hovered(t,x,y) => { root.toolbar-tip=t; root.toolbar-tip-x=x; root.toolbar-tip-y=y; } clicked => { root.new-folder();       } }
+            TBtn { icon: @image-url("../assets/new-link.svg");   tip: "Новая ссылка";     hovered(t,x,y) => { root.toolbar-tip=t; root.toolbar-tip-x=x; root.toolbar-tip-y=y; } clicked => { root.new-bookmark();     } }
+            TBtn { icon: @image-url("../assets/delete.svg");     tip: "Удалить";          hovered(t,x,y) => { root.toolbar-tip=t; root.toolbar-tip-x=x; root.toolbar-tip-y=y; } clicked => { root.request-delete();   } }
             TBtn { icon: @image-url("../assets/import.svg");     tip: "Импорт из ua.dat"; enabled: !root.import-in-progress; hovered(t,x,y) => { root.toolbar-tip=t; root.toolbar-tip-x=x; root.toolbar-tip-y=y; } clicked => { root.import-ua-dat(); } }
             Text { text: root.import-status; vertical-alignment: center; color: #555555; font-size: 12px; }
             Rectangle { horizontal-stretch: 1; }
@@ -712,7 +731,7 @@ export component AppWindow inherits Window {
                 }
                 if root.ctx-is-folder: Rectangle {
                     height: 28px;
-                    TouchArea { clicked => { root.delete-selected(); root.ctx-visible = false; } }
+                    TouchArea { clicked => { root.request-delete(); root.ctx-visible = false; } }
                     Text { x: 12px; text: "Удалить"; color: #cc2222; vertical-alignment: center; height: 28px; }
                 }
 
@@ -736,7 +755,7 @@ export component AppWindow inherits Window {
                 }
                 if !root.ctx-is-folder: Rectangle {
                     height: 28px;
-                    TouchArea { clicked => { root.delete-selected(); root.ctx-visible = false; } }
+                    TouchArea { clicked => { root.request-delete(); root.ctx-visible = false; } }
                     Text { x: 12px; text: "Удалить"; color: #cc2222; vertical-alignment: center; height: 28px; }
                 }
             }
@@ -790,6 +809,12 @@ export component AppWindow inherits Window {
                     spacing: 8px;
                     Text { text: "Note:"; width: 50px; vertical-alignment: center; }
                     LineEdit { horizontal-stretch: 1; text <=> root.prop-note; }
+                }
+
+                if root.prop-error != "": Text {
+                    text: root.prop-error;
+                    color: #cc2222;
+                    font-size: 12px;
                 }
 
                 HorizontalLayout {
@@ -1127,6 +1152,141 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                }
+            }
+        }
+    }
+
+    // ══ Диалог подтверждения удаления ════════════════════════════════════════
+    if root.delete-confirm-visible: Rectangle {
+        x: 0; y: 0;
+        width: root.width; height: root.height;
+        background: #00000055;
+        TouchArea { /* поглощает клики */ }
+        Rectangle {
+            x: (root.width  - self.width)  / 2;
+            y: (root.height - self.height) / 2;
+            width: 320px; height: 110px;
+            background: #f5f5f5;
+            border-radius: 6px;
+            border-color: #aaaaaa;
+            border-width: 1px;
+            VerticalBox {
+                padding: 16px; spacing: 12px;
+                Text { text: "Удалить выбранный элемент?"; font-size: 13px; }
+                HorizontalLayout {
+                    alignment: end; spacing: 8px;
+                    Button {
+                        text: "Да";
+                        clicked => {
+                            root.delete-confirm-visible = false;
+                            root.delete-selected();
+                        }
+                    }
+                    Button {
+                        text: "Отмена";
+                        clicked => { root.delete-confirm-visible = false; }
+                    }
+                }
+            }
+        }
+    }
+
+    // ══ Диалог настроек ═══════════════════════════════════════════════════════
+    if root.settings-visible: Rectangle {
+        x: 0; y: 0;
+        width: root.width; height: root.height;
+        background: #00000055;
+        TouchArea { /* поглощает клики */ }
+        Rectangle {
+            x: (root.width  - self.width)  / 2;
+            y: (root.height - self.height) / 2;
+            width: 460px; height: 340px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            border-color: #aaaaaa;
+            border-width: 1px;
+            VerticalBox {
+                padding: 16px; spacing: 12px;
+                Text { text: "Настройки"; font-size: 14px; font-weight: 700; }
+                TabWidget {
+                    vertical-stretch: 1;
+
+                    Tab {
+                        title: "Общие";
+                        VerticalBox {
+                            padding: 12px; spacing: 8px;
+
+                            Text { text: "ВИД"; font-size: 11px; font-weight: 700; color: #555555; }
+                            CheckBox {
+                                text: "Показывать toolbar";
+                                checked <=> root.settings-show-toolbar;
+                            }
+
+                            Text { text: "ДЕРЕВО ПАПОК"; font-size: 11px; font-weight: 700; color: #555555; }
+                            CheckBox {
+                                text: "Сворачивать другие ветки при открытии";
+                                checked <=> root.settings-collapse-siblings;
+                            }
+
+                            Text { text: "ЗАКЛАДКИ"; font-size: 11px; font-weight: 700; color: #555555; }
+                            CheckBox {
+                                text: "Подтверждать удаление";
+                                checked <=> root.settings-confirm-delete;
+                            }
+                            CheckBox {
+                                text: "Запретить повторяющиеся ссылки";
+                                checked <=> root.settings-no-duplicate-urls;
+                            }
+
+                            Rectangle { vertical-stretch: 1; }
+
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text {
+                                    text: "База данных:";
+                                    font-size: 11px; color: #555555;
+                                    vertical-alignment: center;
+                                    width: 100px;
+                                }
+                                Text {
+                                    text: root.settings-db-path;
+                                    font-size: 11px; color: #333333;
+                                    overflow: elide;
+                                    vertical-alignment: center;
+                                    horizontal-stretch: 1;
+                                }
+                            }
+                        }
+                    }
+
+                    Tab {
+                        title: "Прокси";
+                        Rectangle {
+                            Text {
+                                text: "(будет добавлено вместе с проверкой ссылок)";
+                                color: #888888; font-size: 12px;
+                                horizontal-alignment: center; vertical-alignment: center;
+                            }
+                        }
+                    }
+
+                    Tab {
+                        title: "Рисунок";
+                        Rectangle {
+                            Text {
+                                text: "(будет добавлено вместе со скриншотами)";
+                                color: #888888; font-size: 12px;
+                                horizontal-alignment: center; vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: end; spacing: 8px;
+                    Button { text: "ОК";     clicked => { root.settings-save();   } }
+                    Button { text: "Отмена"; clicked => { root.settings-cancel(); } }
                 }
             }
         }
